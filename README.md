@@ -11,6 +11,22 @@ There's no target circle and no fixed center. The center is found from your draw
 
 The result card shows the average radius, the RMS wobble, the biggest miss (ringed on the drawing), widest minus narrowest radius, whether the loop closed, and the time taken. The stroke is colored from green (on the average radius) to red (8% or more off). If the shape is mostly oval, the card says which way it's stretched.
 
+## Stats
+
+Every **connected** circle is saved: one whose end meets or crosses its start (within 8 px, or 4% of the radius on big circles). Circles with a gap, or spirals whose ends never meet, are still scored but not saved. Half circles and other rejected strokes aren't saved either. After each circle the result card says whether it was saved and how it compares with your average.
+
+Open **Stats** from the top bar or the result card to see:
+
+- **Headline numbers:** average score, circles saved (and how many today), best, and the last 10 circles against your all-time average.
+- **Score per circle:** each circle's score plus a 10-circle rolling average. Hover, tap or use the arrow keys to read values.
+- **Accuracy averages,** all as % of each circle's average radius: RMS wobble, biggest miss, widest minus narrowest, ovalness, and drawing time.
+- **How your scores spread:** a histogram in 5-point bands.
+- **Average score by** input (Apple Pencil, finger, mouse or trackpad), drawing direction and circle size.
+- **Recent circles:** thumbnails of your last 24 outlines, each drawn against its average-radius circle.
+- **A table** of every saved circle, plus **Export CSV / JSON** and **Clear stats**.
+
+Stats are kept in the browser's `localStorage`, so they stay on that device and browser. Nothing is sent anywhere, and each device keeps its own history. Each record is a few hundred bytes. The newest 120 also keep a small outline for the thumbnails. Past 5,000 circles, the oldest are folded into a running total, so the all-time averages stay exact.
+
 ## iPad and Apple Pencil
 
 - Uses Pointer Events with coalesced events where the browser supports them, so fast Apple Pencil input stays smooth.
@@ -31,7 +47,7 @@ To try it on an iPad, host the folder anywhere static, for example GitHub Pages 
 ## Tests
 
 ```sh
-npm test           # unit tests for the fitting and scoring (Node 18+)
+npm test           # unit tests for the fitting, scoring and stats (Node 18+)
 ```
 
 ## Files
@@ -41,5 +57,7 @@ npm test           # unit tests for the fitting and scoring (Node 18+)
 | `index.html` | Page markup |
 | `css/styles.css` | Styles, light and dark |
 | `js/circle-fit.js` | Center location, average radius and scoring (no DOM; also runs in Node) |
+| `js/stats.js` | Saving connected circles and working out the averages (no DOM; also runs in Node) |
+| `js/stats-view.js` | The stats panel and its charts |
 | `js/app.js` | Drawing input, rendering, result card |
-| `tests/circle-fit.test.js` | Unit tests |
+| `tests/*.test.js` | Unit tests |

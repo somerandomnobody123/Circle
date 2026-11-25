@@ -7,7 +7,6 @@
 
   var TAU = Math.PI * 2;
   var STROKE_WIDTH = 4;
-  var BEST_KEY = 'circle-judge:best';
   var COLOR_RANGE = 0.08; // deviation (fraction of radius) shown as fully "off"
 
   var GRADES = [
@@ -32,6 +31,11 @@
   var announce = $('announce');
   var help = $('help');
   var pencilChip = $('pencilChip');
+  var statsDialog = $('statsDialog');
+
+  // Every connected (closed) circle is saved here; see js/stats.js.
+  var store = CircleStats.createStore();
+  var statsView = StatsView.create({ store: store, dialog: statsDialog, onChange: updateBestChip });
 
   var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   var darkScheme = window.matchMedia('(prefers-color-scheme: dark)');
@@ -52,25 +56,13 @@
     pencilOnly: false,
     width: 0,
     height: 0,
-    colors: null,
-    best: loadBest()
+    colors: null
   };
 
   // ---------- Utilities ----------
 
   function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
   function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
-
-  function loadBest() {
-    try {
-      var v = parseFloat(window.localStorage.getItem(BEST_KEY));
-      return isFinite(v) ? v : null;
-    } catch (e) { return null; }
-  }
-
-  function saveBest(v) {
-    try { window.localStorage.setItem(BEST_KEY, String(v)); } catch (e) { /* storage unavailable */ }
-  }
 
   function parseHex(hex) {
     var m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
@@ -309,7 +301,18 @@
   }
 
   function updateBestChip() {
-    $('bestValue').textContent = state.best == null ? '—' : state.best.toFixed(1) + '%';
+    var s = store.summary();
+    var btn = $('statsBtn');
+    if (s.count) {
+      $('bestLabel').textContent = 'Best';
+      $('bestValue').textContent = s.best.toFixed(1) + '%';
+      btn.setAttribute('aria-label', 'Your stats: best ' + s.best.toFixed(1) + '%, average ' +
+        s.average.toFixed(1) + '% over ' + s.count + (s.count === 1 ? ' circle' : ' circles'));
+    } else {
+      $('bestLabel').textContent = 'Stats';
+      $('bestValue').textContent = '';
+      btn.setAttribute('aria-label', 'Your stats');
+    }
   }
 
   function gradeFor(score) {
@@ -322,8 +325,10 @@
   }
 
   function tipFor(res) {
-    if (!res.closed && res.gapDegrees >= 8) {
-      return 'Close the loop: there’s a ' + Math.round(res.gapDegrees) + '° gap between your start and finish.';
+    if (!res.connected) {
+      return res.gapDegrees >= 2
+        ? 'Close the loop: there’s a ' + Math.round(res.gapDegrees) + '° gap between your start and finish.'
+        : 'Close the loop: your finish is ' + Math.round(res.endGap) + ' px from the line you started on.';
     }
     var oval = res.oval;
     if (res.score < 97 && oval.share > 0.5 && oval.aspect > 1.03) {
@@ -362,11 +367,13 @@
     setStat('statMax', fmt(Math.abs(res.maxDeviation)) + ' px',
       pct(Math.abs(res.maxDeviation) / res.radius) + (res.maxDeviation >= 0 ? ' out' : ' in'));
     setStat('statPtv', fmt(res.peakToValley) + ' px', pct(res.peakToValley / res.radius));
-    if (res.closed) {
+    if (res.connected) {
       var extra = res.sweptDegrees - 360;
       setStat('statLoop', 'Closed', extra >= 5 ? '+' + Math.round(extra) + '°' : null);
-    } else {
+    } else if (res.gapDegrees >= 2) {
       setStat('statLoop', 'Gap', Math.round(res.gapDegrees) + '°');
+    } else {
+      setStat('statLoop', 'Open', Math.round(res.endGap) + ' px apart');
     }
     setStat('statTime', res.duration == null ? '—' : (res.duration / 1000).toFixed(1) + ' s');
   }
@@ -399,21 +406,37 @@
     card.dataset.place = best;
   }
 
-  function showResult(res) {
+  /** Save the circle if its ends meet, and describe the outcome for the card. */
+  function recordCircle(res, input) {
+    var before = store.summary();
+    var rec = store.add(res, state.points, { input: input });
+    if (!rec) {
+      return { isBest: false, note: 'Not saved to your stats: only closed circles count.' };
+    }
+    updateBestChip();
+    if (!before.count) {
+      return { isBest: true, note: 'Saved: your first circle in your stats.' };
+    }
+    var diff = res.score - before.average;
+    var how = Math.abs(diff) < 0.05 ? 'right on' : diff.toFixed(1).replace('-', '') + ' points ' + (diff > 0 ? 'above' : 'below');
+    return {
+      isBest: res.score > before.best,
+      note: 'Saved: ' + how + ' your average of ' + before.average.toFixed(1) + '% (' + (before.count + 1) + ' circles now).'
+    };
+  }
+
+  function showResult(res, input) {
     state.result = res;
     state.mode = 'result';
     state.pieceColors = state.points.map(function (p) {
       return deviationColor(CircleFit.relativeDeviation(res, p.x, p.y));
     });
 
-    var isBest = state.best == null || res.score > state.best;
-    if (isBest) {
-      state.best = res.score;
-      saveBest(res.score);
-      updateBestChip();
-    }
+    var saved = recordCircle(res, input);
+    $('savedNote').textContent = saved.note;
+    $('savedNote').classList.toggle('is-unsaved', !res.connected);
 
-    fillCard(res, isBest);
+    fillCard(res, saved.isBest);
     card.hidden = false;
     placeCard();
     void card.offsetWidth; // let the entrance transition run
@@ -482,6 +505,7 @@
   function finishStroke() {
     if (state.pointerId == null) return;
     try { canvas.releasePointerCapture(state.pointerId); } catch (err) { /* already released */ }
+    var input = state.pointerType;
     state.pointerId = null;
     state.pointerType = null;
 
@@ -498,7 +522,7 @@
       announce.textContent = res.message;
       return;
     }
-    showResult(res);
+    showResult(res, input);
   }
 
   function onPointerDown(e) {
@@ -565,6 +589,17 @@
     showToast(state.pencilOnly ? 'Pencil only: touches from your hand are ignored.' : 'Finger drawing is on.');
   });
 
+  $('statsBtn').addEventListener('click', statsView.open);
+  $('cardStatsBtn').addEventListener('click', statsView.open);
+
+  // Another tab saved a circle: pick it up.
+  window.addEventListener('storage', function (e) {
+    if (e.key !== CircleStats.STORAGE_KEY && e.key !== null) return;
+    store.reload();
+    updateBestChip();
+    if (statsView.isOpen()) statsView.refresh();
+  });
+
   $('helpBtn').addEventListener('click', function () {
     if (typeof help.showModal === 'function') help.showModal();
     else help.setAttribute('open', '');
@@ -574,7 +609,7 @@
   });
 
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && !help.open && state.mode !== 'drawing') clearBoard();
+    if (e.key === 'Escape' && !help.open && !statsDialog.open && state.mode !== 'drawing') clearBoard();
   });
 
   function onSchemeChange() {

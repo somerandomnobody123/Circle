@@ -139,6 +139,27 @@ test('overshooting a little is fine, multiple laps are rejected', () => {
   assert.equal(loops.reason, 'loops');
 });
 
+test('connected: ends that meet or cross count, gaps and spirals do not', () => {
+  assert.equal(CircleFit.analyze(circle({ turns: 1 })).connected, true);
+  assert.equal(CircleFit.analyze(circle({ turns: 1.15, noise: 1 })).connected, true); // crosses its start
+  assert.equal(CircleFit.analyze(circle({ turns: 0.997, r: 150 })).connected, true); // ~3 px short
+  const gap = CircleFit.analyze(circle({ turns: 0.95, r: 150 }));
+  assert.equal(gap.ok, true);
+  assert.equal(gap.connected, false);
+  assert.ok(gap.endGap > 40);
+
+  // A spiral goes all the way round but its ends never meet.
+  const spiral = [];
+  for (let i = 0; i <= 300; i++) {
+    const u = i / 300, a = TAU * 1.1 * u, r = 150 + 45 * u;
+    spiral.push({ x: 400 + r * Math.cos(a), y: 300 + r * Math.sin(a) });
+  }
+  const s = CircleFit.analyze(spiral);
+  assert.equal(s.ok, true);
+  assert.equal(s.closed, true);
+  assert.equal(s.connected, false);
+});
+
 test('direction of drawing does not matter', () => {
   const cw = CircleFit.analyze(circle({ noise: 3, seed: 9 }));
   const ccw = CircleFit.analyze(circle({ noise: 3, seed: 9 }).reverse());

@@ -35,7 +35,9 @@
     maxSweepTurns: 1.5,     // more than one and a half laps is not "a circle"
     wobblePenalty: 5,       // score loses 5 points per 1% RMS deviation
     gapPenalty: 100,        // score loses 100 points per full turn left open
-    sampleSpacing: 2        // px between resampled points
+    sampleSpacing: 2,       // px between resampled points
+    joinTolerance: 0.04,    // ends "meet" within 4% of the radius...
+    joinMinPx: 8            // ...or 8 px, whichever is larger
   };
 
   function clamp(v, lo, hi) {
@@ -218,6 +220,48 @@
     return fit;
   }
 
+  function pointSegmentDistance(px, py, a, b) {
+    var dx = b.x - a.x, dy = b.y - a.y;
+    var len2 = dx * dx + dy * dy;
+    var t = len2 ? clamp(((px - a.x) * dx + (py - a.y) * dy) / len2, 0, 1) : 0;
+    return Math.hypot(px - (a.x + dx * t), py - (a.y + dy * t));
+  }
+
+  function segmentsCross(a, b, c, d) {
+    var d1 = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    var d2 = (b.x - a.x) * (d.y - a.y) - (b.y - a.y) * (d.x - a.x);
+    var d3 = (d.x - c.x) * (a.y - c.y) - (d.y - c.y) * (a.x - c.x);
+    var d4 = (d.x - c.x) * (b.y - c.y) - (d.y - c.y) * (b.x - c.x);
+    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+  }
+
+  /**
+   * How close the two ends of the stroke come to joining up, in px: 0 if the
+   * end of the stroke crosses its beginning, otherwise the smaller of the
+   * distances from each end point to the other half of the stroke.
+   */
+  function endGap(samples) {
+    var n = samples.length;
+    var half = Math.floor(n / 2);
+    var third = Math.floor(n / 3);
+    var i, j;
+    for (i = 1; i <= third; i++) {
+      for (j = n - third; j < n; j++) {
+        if (j - i < 2) continue;
+        if (segmentsCross(samples[i - 1], samples[i], samples[j - 1], samples[j])) return 0;
+      }
+    }
+    var first = samples[0], last = samples[n - 1];
+    var best = Infinity;
+    for (i = 1; i <= half; i++) {
+      best = Math.min(best, pointSegmentDistance(last.x, last.y, samples[i - 1], samples[i]));
+    }
+    for (j = half + 1; j < n; j++) {
+      best = Math.min(best, pointSegmentDistance(first.x, first.y, samples[j - 1], samples[j]));
+    }
+    return best;
+  }
+
   function wrapAngle(a) {
     while (a > Math.PI) a -= TAU;
     while (a <= -Math.PI) a += TAU;
@@ -322,6 +366,9 @@
     var roundness = 100 * (1 - opts.wobblePenalty * relRms);
     var score = clamp(roundness - opts.gapPenalty * gapTurns, 0, 100);
 
+    var gapPx = endGap(samples);
+    var connected = gapPx <= Math.max(opts.joinMinPx, opts.joinTolerance * radius);
+
     var first = points[0], last = points[points.length - 1];
     var duration = (isFinite(first.t) && isFinite(last.t)) ? Math.max(0, last.t - first.t) : null;
 
@@ -345,6 +392,8 @@
       startAngle: Math.atan2(first.y - cy, first.x - cx),
       closed: gapTurns === 0,
       gapDegrees: gapTurns * 360,
+      endGap: gapPx,                     // px between the ends (0 if the stroke crosses itself)
+      connected: connected,              // the two ends meet: a closed loop
       length: length,
       sampleCount: samples.length,
       duration: duration
