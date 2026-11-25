@@ -13,6 +13,41 @@
   var TABLE_MAX = 100;
 
   var INPUT_SHORT = { pen: 'Pencil', touch: 'Finger', mouse: 'Mouse', other: 'Other' };
+
+  // How each scoring metric is labelled and formatted.
+  var METRIC = {
+    score: {
+      noun: 'score',
+      Noun: 'Score',
+      fmt: function (v) { return v.toFixed(1) + '%'; },
+      diff: function (v) { return v.toFixed(1); },
+      spread: function (v) { return '\u00b1' + v.toFixed(1); },
+      histTitle: 'How your scores spread',
+      histSub: 'Number of circles in each 5-point band',
+      range: function (b) {
+        if (!isFinite(b.from)) return 'Under ' + b.to;
+        if (!isFinite(b.to)) return b.from + '\u2013100';
+        return b.from + '\u2013' + b.to;
+      },
+      scale: function () { return 100; }
+    },
+    bits: {
+      noun: 'precision',
+      Noun: 'Precision',
+      fmt: function (v) { return v.toFixed(2) + ' bits'; },
+      diff: function (v) { return v.toFixed(2) + ' bits'; },
+      spread: function (v) { return '\u00b1' + v.toFixed(2) + ' bits'; },
+      histTitle: 'How your precision spreads',
+      histSub: 'Number of circles in each half-bit band',
+      range: function (b) {
+        if (!isFinite(b.from)) return 'Under ' + b.to + ' bits';
+        if (!isFinite(b.to)) return b.from + ' bits or more';
+        return b.from + '\u2013' + b.to + ' bits';
+      },
+      // Meter bars run from 0 to 10 bits (1 part in 1,024), or further if needed.
+      scale: function (values) { return Math.max(10, Math.ceil(Math.max.apply(null, values))); }
+    }
+  };
   var GROUP_TITLES = { input: 'Drawn with', dir: 'Direction', size: 'Size' };
 
   // ---------- Small helpers ----------
@@ -32,7 +67,6 @@
     return node;
   }
 
-  function f1(v) { return v == null || !isFinite(v) ? '—' : v.toFixed(1); }
   function pct(v) { return v == null || !isFinite(v) ? '—' : v.toFixed(1) + '%'; }
   function plural(n, word) { return n.toLocaleString() + ' ' + word + (n === 1 ? '' : 's'); }
 
@@ -108,7 +142,7 @@
   // ---------- Charts ----------
 
   /** Each circle's score as a gray dot, with the rolling average as the accent line. */
-  function renderTrend(container, summary) {
+  function renderTrend(container, summary, M) {
     container.textContent = '';
     var series = summary.series.slice(-TREND_MAX);
     if (!series.length) return;
@@ -118,21 +152,34 @@
     var w = width - m.left - m.right, h = height - m.top - m.bottom;
 
     var low = 100;
-    series.forEach(function (p) { low = Math.min(low, p.score, p.rolling); });
-    var lo = Math.max(0, Math.floor((low - 2) / 10) * 10);
-    if (100 - lo < 20) lo = 80;
-    var yStep = 100 - lo > 50 ? 20 : 10;
+    var high = -Infinity;
+    series.forEach(function (p) {
+      low = Math.min(low, p.value, p.rolling);
+      high = Math.max(high, p.value, p.rolling);
+    });
+    var lo, hi, yStep;
+    if (summary.metric === 'bits') {
+      lo = Math.max(0, Math.floor(low - 0.25));
+      hi = Math.max(lo + 2, Math.ceil(high + 0.25));
+      yStep = niceStep(hi - lo, 5);
+      hi = lo + Math.ceil((hi - lo) / yStep) * yStep;
+    } else {
+      lo = Math.max(0, Math.floor((low - 2) / 10) * 10);
+      if (100 - lo < 20) lo = 80;
+      hi = 100;
+      yStep = hi - lo > 50 ? 20 : 10;
+    }
     var x = function (i) { return m.left + (series.length === 1 ? w / 2 : (i / (series.length - 1)) * w); };
-    var y = function (v) { return m.top + h - ((v - lo) / (100 - lo)) * h; };
+    var y = function (v) { return m.top + h - ((Math.min(v, hi) - lo) / (hi - lo)) * h; };
 
     var root = svg('svg', { width: width, height: height, viewBox: '0 0 ' + width + ' ' + height, class: 'chart-svg' }, container);
     root.setAttribute('tabindex', '0');
     var last = series[series.length - 1];
-    root.setAttribute('aria-label', 'Score per circle for the last ' + plural(series.length, 'circle') +
-      '. Latest ' + summary.rollingWindow + '-circle average ' + last.rolling.toFixed(1) + '%. Use the arrow keys to read each circle.');
+    root.setAttribute('aria-label', M.Noun + ' per circle for the last ' + plural(series.length, 'circle') +
+      '. Latest ' + summary.rollingWindow + '-circle average ' + M.fmt(last.rolling) + '. Use the arrow keys to read each circle.');
 
     // Gridlines + y ticks.
-    for (var t = lo; t <= 100; t += yStep) {
+    for (var t = lo; t <= hi + 1e-9; t += yStep) {
       svg('line', { x1: m.left, x2: m.left + w, y1: y(t), y2: y(t), class: t === lo ? 'axis-line' : 'grid-line' }, root);
       svg('text', { x: m.left - 8, y: y(t), class: 'tick', 'text-anchor': 'end', 'dominant-baseline': 'middle' }, root).textContent = t;
     }
@@ -146,7 +193,7 @@
     // Each circle: de-emphasised dots with a surface ring.
     var dots = svg('g', { class: 'dots' }, root);
     series.forEach(function (p, i) {
-      svg('circle', { cx: x(i), cy: y(p.score), r: 4, class: 'dot-muted' }, dots);
+      svg('circle', { cx: x(i), cy: y(p.value), r: 4, class: 'dot-muted' }, dots);
     });
 
     // Rolling average: the accent line, with an end dot and a direct label.
@@ -156,7 +203,7 @@
     }
     var ex = x(series.length - 1), ey = y(last.rolling);
     svg('circle', { cx: ex, cy: ey, r: 4.5, class: 'dot-accent' }, root);
-    svg('text', { x: ex + 10, y: ey - 7, class: 'end-label' }, root).textContent = last.rolling.toFixed(1) + '%';
+    svg('text', { x: ex + 10, y: ey - 7, class: 'end-label' }, root).textContent = M.fmt(last.rolling);
     svg('text', { x: ex + 10, y: ey + 9, class: 'end-sub' }, root).textContent = 'average';
 
     // Hover / focus layer: a crosshair that snaps to the nearest circle.
@@ -169,12 +216,12 @@
       var p = series[i], cx = x(i);
       cross.setAttribute('x1', cx); cross.setAttribute('x2', cx);
       cross.classList.add('is-visible');
-      hilite.setAttribute('cx', cx); hilite.setAttribute('cy', y(p.score));
+      hilite.setAttribute('cx', cx); hilite.setAttribute('cy', y(p.value));
       hilite.classList.add('is-visible');
       tip.show('Circle #' + p.n + ' · ' + shortDate(p.at), [
-        { key: 'key-dot', value: p.score.toFixed(1) + '%', label: 'score' },
-        { key: 'key-line', value: p.rolling.toFixed(1) + '%', label: summary.rollingWindow + '-circle average' }
-      ], cx, y(p.score));
+        { key: 'key-dot', value: M.fmt(p.value), label: M.noun },
+        { key: 'key-line', value: M.fmt(p.rolling), label: summary.rollingWindow + '-circle average' }
+      ], cx, y(p.value));
     }
     function hide() {
       active = -1;
@@ -207,7 +254,7 @@
   }
 
   /** Histogram of scores: one hue, counts on the caps. */
-  function renderHistogram(container, summary) {
+  function renderHistogram(container, summary, M) {
     container.textContent = '';
     var bins = summary.histogram;
     var total = bins.reduce(function (s, b) { return s + b.count; }, 0);
@@ -222,8 +269,8 @@
 
     var root = svg('svg', { width: width, height: height, viewBox: '0 0 ' + width + ' ' + height, class: 'chart-svg' }, container);
     root.setAttribute('role', 'img');
-    root.setAttribute('aria-label', 'Score spread: ' + bins.filter(function (b) { return b.count; }).map(function (b) {
-      return plural(b.count, 'circle') + ' scored ' + (b.from === 0 ? 'under 50' : b.from + ' to ' + b.to);
+    root.setAttribute('aria-label', M.Noun + ' spread: ' + bins.filter(function (b) { return b.count; }).map(function (b) {
+      return plural(b.count, 'circle') + ': ' + M.range(b);
     }).join(', ') + '.');
 
     var tip = makeTip(container);
@@ -236,7 +283,7 @@
       }
       svg('text', { x: cx, y: base + 18, class: 'tick', 'text-anchor': 'middle' }, root).textContent = b.label;
       var hit = svg('rect', { x: m.left + slot * i, y: 0, width: slot, height: height, class: 'hit' }, root);
-      var range = b.from === 0 ? 'Under 50' : b.from + '–' + b.to;
+      var range = M.range(b);
       var share = total ? Math.round((b.count / total) * 100) : 0;
       var showTip = function () {
         tip.show(range, [{ key: 'key-bar', value: plural(b.count, 'circle'), label: share + '% of saved' }], cx, base - h / 2);
@@ -248,8 +295,13 @@
     svg('line', { x1: m.left, x2: m.left + w, y1: base, y2: base, class: 'axis-line' }, root);
   }
 
-  function renderBreakdowns(container, summary) {
+  function renderBreakdowns(container, summary, M) {
     container.textContent = '';
+    var all = [];
+    ['input', 'dir', 'size'].forEach(function (kind) {
+      summary.groups[kind].forEach(function (g) { all.push(g.average); });
+    });
+    var scale = M.scale(all);
     ['input', 'dir', 'size'].forEach(function (kind) {
       var rows = summary.groups[kind];
       if (!rows.length) return;
@@ -262,14 +314,14 @@
         var track = html('span', 'meter-track', null, li);
         track.setAttribute('role', 'meter');
         track.setAttribute('aria-valuemin', '0');
-        track.setAttribute('aria-valuemax', '100');
-        track.setAttribute('aria-valuenow', row.average.toFixed(1));
-        track.setAttribute('aria-label', row.label + ' average score');
+        track.setAttribute('aria-valuemax', String(scale));
+        track.setAttribute('aria-valuenow', row.average.toFixed(2));
+        track.setAttribute('aria-label', row.label + ' average ' + M.noun);
         var fill = html('span', 'meter-fill', null, track);
-        fill.style.width = Math.max(0, Math.min(100, row.average)) + '%';
+        fill.style.width = Math.max(0, Math.min(100, (row.average / scale) * 100)) + '%';
         var fig = html('span', 'meter-figure', null, li);
-        html('strong', null, row.average.toFixed(1) + '%', fig);
-        html('small', null, plural(row.count, 'circle') + ' · best ' + f1(row.best), fig);
+        html('strong', null, M.fmt(row.average), fig);
+        html('small', null, plural(row.count, 'circle') + ' · best ' + M.fmt(row.best), fig);
       });
     });
   }
@@ -291,7 +343,7 @@
     });
   }
 
-  function renderThumbs(container, records, summary, now) {
+  function renderThumbs(container, records, summary, now, M) {
     container.textContent = '';
     var withShapes = [];
     for (var i = records.length - 1; i >= 0 && withShapes.length < THUMBS_MAX; i--) {
@@ -306,7 +358,7 @@
       var pts = rec.shape, d = '';
       for (var k = 0; k < pts.length; k += 2) d += (k ? 'L' : 'M') + pts[k] + ',' + pts[k + 1];
       svg('path', { d: d, class: 'thumb-path' }, s);
-      html('span', 'thumb-score', rec.score.toFixed(1) + '%', li);
+      html('span', 'thumb-score', M.fmt(CircleStats.metricOf(rec, summary.metric)), li);
       html('span', 'thumb-meta', INPUT_SHORT[rec.input] + ' · ' + ago(rec.at, now), li);
     });
   }
@@ -315,7 +367,7 @@
     table.textContent = '';
     var head = html('thead', null, null, table);
     var hr = html('tr', null, null, head);
-    ['#', 'When', 'Score', 'Wobble', 'Biggest miss', 'Oval', 'Radius', 'Time', 'Drawn with', 'Direction'].forEach(function (h) {
+    ['#', 'When', 'Score', 'Precision', 'Wobble', 'Biggest miss', 'Oval', 'Radius', 'Time', 'Drawn with', 'Direction'].forEach(function (h) {
       var th = html('th', null, h, hr);
       th.scope = 'col';
     });
@@ -328,6 +380,7 @@
         summary.archived + i + 1,
         dateTime(r.at),
         r.score.toFixed(1) + '%',
+        CircleStats.metricOf(r, 'bits').toFixed(2) + ' bits',
         r.wobble.toFixed(1) + '%',
         r.miss.toFixed(1) + '%',
         r.oval.toFixed(1) + '%',
@@ -346,6 +399,7 @@
 
   function create(options) {
     var store = options.store;
+    var getMetric = options.getMetric || function () { return 'score'; };
     var dialog = options.dialog;
     var onChange = options.onChange || function () {};
     var $ = function (id) { return document.getElementById(id); };
@@ -361,7 +415,9 @@
 
     function refresh() {
       var now = Date.now();
-      var s = store.summary(now);
+      var metric = getMetric();
+      var M = METRIC[metric];
+      var s = store.summary({ metric: metric, now: now });
       var empty = !s.count;
       $('statsEmpty').hidden = !empty;
       $('statsBody').hidden = empty;
@@ -371,28 +427,32 @@
       disarmClear();
       if (empty) return;
 
-      setKpi('kpiAverage', s.average.toFixed(1) + '%', 'kpiAverageNote', 'typical spread ±' + s.stdev.toFixed(1));
+      $('kpiAverageLabel').textContent = 'Average ' + M.noun;
+      setKpi('kpiAverage', M.fmt(s.average), 'kpiAverageNote', 'typical spread ' + M.spread(s.stdev));
       setKpi('kpiCount', s.count.toLocaleString(), 'kpiCountNote', s.today.count ? s.today.count + ' today' : 'none today');
-      setKpi('kpiBest', s.best.toFixed(1) + '%', 'kpiBestNote', shortDate(s.bestAt));
+      setKpi('kpiBest', M.fmt(s.best), 'kpiBestNote', s.bestAt == null ? '' : shortDate(s.bestAt));
       $('kpiRecentLabel').textContent = s.last10.count < 10 ? 'Last ' + plural(s.last10.count, 'circle') : 'Last 10 circles';
       if (s.count > s.last10.count) {
         var delta = s.last10.average - s.average;
         var up = delta >= 0;
-        setKpi('kpiRecent', s.last10.average.toFixed(1) + '%', 'kpiRecentNote',
-          (up ? '▲ +' : '▼ −') + Math.abs(delta).toFixed(1) + ' vs all-time',
-          Math.abs(delta) < 0.05 ? '' : up ? 'is-up' : 'is-down');
+        setKpi('kpiRecent', M.fmt(s.last10.average), 'kpiRecentNote',
+          (up ? '▲ +' : '▼ −') + M.diff(Math.abs(delta)) + ' vs all-time',
+          Math.abs(delta) < 0.005 ? '' : up ? 'is-up' : 'is-down');
       } else {
-        setKpi('kpiRecent', s.last10.average.toFixed(1) + '%', 'kpiRecentNote', 'trend shows after 10 circles');
+        setKpi('kpiRecent', M.fmt(s.last10.average), 'kpiRecentNote', 'trend shows after 10 circles');
       }
 
-      $('trendTitle').textContent = s.series.length > TREND_MAX ? 'Score per circle (last ' + TREND_MAX + ')' : 'Score per circle';
+      $('trendTitle').textContent = M.Noun + ' per circle' + (s.series.length > TREND_MAX ? ' (last ' + TREND_MAX + ')' : '');
+      $('histTitle').textContent = M.histTitle;
+      $('histSub').textContent = M.histSub;
+      $('breakdownTitle').textContent = 'Average ' + M.noun + ' by…';
       $('rollingLabel').textContent = s.rollingWindow + '-circle average';
-      renderTrend($('trendChart'), s);
+      renderTrend($('trendChart'), s, M);
       renderAccuracy($('accuracy'), s);
-      renderHistogram($('histChart'), s);
-      renderBreakdowns($('breakdowns'), s);
+      renderHistogram($('histChart'), s, M);
+      renderBreakdowns($('breakdowns'), s, M);
       var records = store.records();
-      renderThumbs($('thumbs'), records, s, now);
+      renderThumbs($('thumbs'), records, s, now, M);
       renderTable($('dataTable'), $('tableNote'), records, s);
 
       var notes = [];

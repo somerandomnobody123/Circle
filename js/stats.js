@@ -1,6 +1,12 @@
 /*
  * stats.js — keeps a record of every closed ("connected") circle and works out
- * accuracy averages from them.
+ * accuracy averages from them, for either scoring mode:
+ *
+ *   - "score": the classic 0–100% score
+ *   - "bits":  precision in bits, ½·log₂(1 + r̄²/σ²)
+ *
+ * Averaging bits averages logarithms, so the average precision is the
+ * precision of the geometric-mean wobble.
  *
  * Records live in the browser's localStorage, so they stay on this device and
  * survive reloads. Each record is a few hundred bytes; the newest MAX_SHAPES
@@ -24,6 +30,8 @@
   var MAX_SHAPES = 120;
   var SHAPE_POINTS = 48;
   var ROLLING_WINDOW = 10;
+  var MAX_BITS = (CircleFit && CircleFit.MAX_BITS) || 52;
+  var METRICS = ['score', 'bits'];
 
   var GROUPS = {
     input: [
@@ -43,9 +51,12 @@
     ]
   };
 
-  // Equal 5-point bins from 50 up, plus one bin for everything below 50.
-  var BINS = [[0, 50, '<50']];
-  for (var b = 50; b < 100; b += 5) BINS.push([b, b + 5, String(b)]);
+  // Histogram bins per metric: [from, to, label].
+  var BINS = { score: [[-Infinity, 50, '<50']], bits: [[-Infinity, 3, '<3']] };
+  for (var b = 50; b < 100; b += 5) BINS.score.push([b, b + 5, String(b)]);
+  BINS.score[BINS.score.length - 1][1] = Infinity; // 95 includes 100
+  for (var h = 3; h < 9; h += 0.5) BINS.bits.push([h, h + 0.5, String(h)]);
+  BINS.bits.push([9, Infinity, '9+']);
 
   function round(v, places) {
     var f = Math.pow(10, places);
@@ -60,6 +71,18 @@
     var d = new Date(ms);
     d.setHours(0, 0, 0, 0);
     return d.getTime();
+  }
+
+  /** Precision of an older record that predates bits, from its stroke → circle wobble (%). */
+  function bitsFromWobble(wobblePct) {
+    if (!(wobblePct > 0)) return MAX_BITS;
+    var ratio = 100 / wobblePct;
+    return Math.min(MAX_BITS, 0.5 * Math.log2(1 + ratio * ratio));
+  }
+
+  function metricOf(rec, metric) {
+    if (metric === 'bits') return typeof rec.bits === 'number' && isFinite(rec.bits) ? rec.bits : bitsFromWobble(rec.wobble);
+    return rec.score;
   }
 
   /** Outline relative to the located center, scaled so the average radius is 100. */
@@ -81,6 +104,7 @@
     var rec = {
       at: meta.at || Date.now(),
       score: round(result.score, 2),
+      bits: round(result.precision ? result.precision.bits : bitsFromWobble(result.relativeRms * 100), 3),
       radius: round(result.radius, 1),
       wobble: round(result.relativeRms * 100, 2),
       miss: round(Math.abs(result.maxDeviation) / result.radius * 100, 2),
@@ -98,9 +122,16 @@
 
   // ---------- Aggregates ----------
 
+  function emptyMetric() { return { sum: 0, sq: 0, best: null, bestAt: null }; }
+
+  function emptyGroup() {
+    return { count: 0, m: { score: { sum: 0, best: null }, bits: { sum: 0, best: null } } };
+  }
+
   function emptyAggregate() {
     return {
-      count: 0, score: 0, scoreSq: 0, best: null, bestAt: null,
+      count: 0,
+      m: { score: emptyMetric(), bits: emptyMetric() },
       wobble: 0, miss: 0, spread: 0, oval: 0,
       duration: 0, durationCount: 0,
       firstAt: null,
@@ -108,18 +139,26 @@
     };
   }
 
+  function better(a, b) { return a != null && (b == null || a > b); }
+
   function addToGroup(groups, kind, key, rec) {
-    var g = groups[kind][key] || (groups[kind][key] = { count: 0, score: 0, best: null });
+    var g = groups[kind][key] || (groups[kind][key] = emptyGroup());
     g.count++;
-    g.score += rec.score;
-    if (g.best == null || rec.score > g.best) g.best = rec.score;
+    METRICS.forEach(function (metric) {
+      var v = metricOf(rec, metric);
+      g.m[metric].sum += v;
+      if (better(v, g.m[metric].best)) g.m[metric].best = v;
+    });
   }
 
   function accumulate(agg, rec) {
     agg.count++;
-    agg.score += rec.score;
-    agg.scoreSq += rec.score * rec.score;
-    if (agg.best == null || rec.score > agg.best) { agg.best = rec.score; agg.bestAt = rec.at; }
+    METRICS.forEach(function (metric) {
+      var v = metricOf(rec, metric), m = agg.m[metric];
+      m.sum += v;
+      m.sq += v * v;
+      if (better(v, m.best)) { m.best = v; m.bestAt = rec.at; }
+    });
     agg.wobble += rec.wobble;
     agg.miss += rec.miss;
     agg.spread += rec.spread;
@@ -135,11 +174,12 @@
   function mergeAggregate(into, from) {
     if (!from || !from.count) return into;
     into.count += from.count;
-    into.score += from.score;
-    into.scoreSq += from.scoreSq;
-    if (from.best != null && (into.best == null || from.best > into.best)) {
-      into.best = from.best; into.bestAt = from.bestAt;
-    }
+    METRICS.forEach(function (metric) {
+      var a = into.m[metric], f = from.m[metric];
+      a.sum += f.sum;
+      a.sq += f.sq;
+      if (better(f.best, a.best)) { a.best = f.best; a.bestAt = f.bestAt; }
+    });
     into.wobble += from.wobble;
     into.miss += from.miss;
     into.spread += from.spread;
@@ -148,35 +188,43 @@
     into.durationCount += from.durationCount;
     if (from.firstAt != null && (into.firstAt == null || from.firstAt < into.firstAt)) into.firstAt = from.firstAt;
     ['input', 'dir', 'size'].forEach(function (kind) {
-      var groups = from.groups && from.groups[kind];
+      var groups = from.groups[kind] || {};
       for (var key in groups) {
-        var g = into.groups[kind][key] || (into.groups[kind][key] = { count: 0, score: 0, best: null });
+        var g = into.groups[kind][key] || (into.groups[kind][key] = emptyGroup());
         g.count += groups[key].count;
-        g.score += groups[key].score;
-        if (groups[key].best != null && (g.best == null || groups[key].best > g.best)) g.best = groups[key].best;
+        METRICS.forEach(function (metric) {
+          g.m[metric].sum += groups[key].m[metric].sum;
+          if (better(groups[key].m[metric].best, g.m[metric].best)) g.m[metric].best = groups[key].m[metric].best;
+        });
       }
     });
     return into;
   }
 
-  function mean(list, field) {
+  function mean(list, metric) {
     if (!list.length) return null;
     var s = 0;
-    for (var i = 0; i < list.length; i++) s += list[i][field];
+    for (var i = 0; i < list.length; i++) s += metricOf(list[i], metric);
     return s / list.length;
   }
 
-  /** All the averages the stats panel shows, from the records plus any archived total. */
-  function summarize(data, now) {
-    now = now || Date.now();
+  /**
+   * All the averages the stats panel shows, from the records plus any archived
+   * total. options: { metric: 'score' | 'bits', now: ms }.
+   */
+  function summarize(data, options) {
+    options = options || {};
+    var metric = options.metric === 'bits' ? 'bits' : 'score';
+    var now = options.now || Date.now();
     var records = data.records;
     var agg = mergeAggregate(emptyAggregate(), data.archive);
     records.forEach(function (r) { accumulate(agg, r); });
     var n = agg.count;
-    if (!n) return { count: 0 };
+    if (!n) return { count: 0, metric: metric };
 
-    var average = agg.score / n;
-    var variance = Math.max(0, agg.scoreSq / n - average * average);
+    var m = agg.m[metric];
+    var average = m.sum / n;
+    var variance = Math.max(0, m.sq / n - average * average);
 
     var last10 = records.slice(-ROLLING_WINDOW);
     var today = startOfDay(now);
@@ -190,42 +238,41 @@
           key: entry[0],
           label: entry[1],
           count: g ? g.count : 0,
-          average: g && g.count ? g.score / g.count : null,
-          best: g ? g.best : null
+          average: g && g.count ? g.m[metric].sum / g.count : null,
+          best: g ? g.m[metric].best : null
         };
       }).filter(function (g) { return g.count > 0; });
     });
 
-    var histogram = BINS.map(function (bin) {
+    var histogram = BINS[metric].map(function (bin) {
       return { from: bin[0], to: bin[1], label: bin[2], count: 0 };
     });
     records.forEach(function (r) {
-      var idx = r.score < 50 ? 0 : Math.min(BINS.length - 1, 1 + Math.floor((r.score - 50) / 5));
-      histogram[idx].count++;
+      var v = metricOf(r, metric);
+      for (var i = 0; i < histogram.length; i++) {
+        if (v < histogram[i].to) { histogram[i].count++; break; }
+      }
     });
 
     var archived = data.archive ? data.archive.count : 0;
     var series = [];
     var windowSum = 0;
     for (var i = 0; i < records.length; i++) {
-      windowSum += records[i].score;
-      if (i >= ROLLING_WINDOW) windowSum -= records[i - ROLLING_WINDOW].score;
-      series.push({
-        n: archived + i + 1,
-        at: records[i].at,
-        score: records[i].score,
-        rolling: windowSum / Math.min(i + 1, ROLLING_WINDOW)
-      });
+      var v = metricOf(records[i], metric);
+      windowSum += v;
+      if (i >= ROLLING_WINDOW) windowSum -= metricOf(records[i - ROLLING_WINDOW], metric);
+      series.push({ n: archived + i + 1, at: records[i].at, value: v, rolling: windowSum / Math.min(i + 1, ROLLING_WINDOW) });
     }
 
     return {
+      metric: metric,
       count: n,
       stored: records.length,
       archived: archived,
       average: average,
       stdev: Math.sqrt(variance),
-      best: agg.best,
-      bestAt: agg.bestAt,
+      best: m.best,
+      bestAt: m.bestAt,
       firstAt: agg.firstAt,
       lastAt: records.length ? records[records.length - 1].at : null,
       wobble: agg.wobble / n,
@@ -233,8 +280,8 @@
       spread: agg.spread / n,
       oval: agg.oval / n,
       duration: agg.durationCount ? agg.duration / agg.durationCount : null,
-      last10: { count: last10.length, average: mean(last10, 'score') },
-      today: { count: todays.length, average: mean(todays, 'score') },
+      last10: { count: last10.length, average: mean(last10, metric) },
+      today: { count: todays.length, average: mean(todays, metric) },
       groups: groups,
       histogram: histogram,
       series: series,
@@ -249,12 +296,12 @@
   }
 
   var NUMERIC_FIELDS = ['at', 'score', 'radius', 'wobble', 'miss', 'spread', 'oval'];
-  var ARCHIVE_FIELDS = ['count', 'score', 'scoreSq', 'wobble', 'miss', 'spread', 'oval', 'duration', 'durationCount'];
+  var ARCHIVE_FIELDS = ['count', 'wobble', 'miss', 'spread', 'oval', 'duration', 'durationCount'];
+
+  function isNum(v) { return typeof v === 'number' && isFinite(v); }
 
   function allFinite(obj, fields) {
-    for (var i = 0; i < fields.length; i++) {
-      if (typeof obj[fields[i]] !== 'number' || !isFinite(obj[fields[i]])) return false;
-    }
+    for (var i = 0; i < fields.length; i++) if (!isNum(obj[fields[i]])) return false;
     return true;
   }
 
@@ -263,20 +310,56 @@
       (r.dir === 'cw' || r.dir === 'ccw') && typeof r.input === 'string';
   }
 
-  function isArchive(a) {
-    return !!a && typeof a === 'object' && allFinite(a, ARCHIVE_FIELDS) && a.count > 0 &&
-      !!a.groups && typeof a.groups === 'object';
+  /**
+   * Validate an archived total. Archives written before precision existed hold
+   * score totals only; their bits totals are estimated from the mean wobble.
+   */
+  function readArchive(a) {
+    if (!a || typeof a !== 'object' || !allFinite(a, ARCHIVE_FIELDS) || !(a.count > 0) || !a.groups) return null;
+    var out = emptyAggregate();
+    ['count', 'wobble', 'miss', 'spread', 'oval', 'duration', 'durationCount'].forEach(function (k) { out[k] = a[k]; });
+    out.firstAt = isNum(a.firstAt) ? a.firstAt : null;
+    var estBits = bitsFromWobble(a.wobble / a.count);
+    if (a.m && a.m.score && a.m.bits) {
+      METRICS.forEach(function (metric) {
+        var f = a.m[metric];
+        if (!isNum(f.sum) || !isNum(f.sq)) return;
+        out.m[metric] = { sum: f.sum, sq: f.sq, best: isNum(f.best) ? f.best : null, bestAt: isNum(f.bestAt) ? f.bestAt : null };
+      });
+    } else if (isNum(a.score) && isNum(a.scoreSq)) {
+      out.m.score = { sum: a.score, sq: a.scoreSq, best: isNum(a.best) ? a.best : null, bestAt: isNum(a.bestAt) ? a.bestAt : null };
+      out.m.bits = { sum: estBits * a.count, sq: estBits * estBits * a.count, best: null, bestAt: null };
+    } else {
+      return null;
+    }
+    ['input', 'dir', 'size'].forEach(function (kind) {
+      var groups = a.groups[kind] || {};
+      for (var key in groups) {
+        var g = groups[key];
+        if (!g || !(g.count > 0)) continue;
+        var ng = emptyGroup();
+        ng.count = g.count;
+        if (g.m && g.m.score && g.m.bits) {
+          METRICS.forEach(function (metric) {
+            ng.m[metric].sum = isNum(g.m[metric].sum) ? g.m[metric].sum : 0;
+            ng.m[metric].best = isNum(g.m[metric].best) ? g.m[metric].best : null;
+          });
+        } else {
+          ng.m.score.sum = isNum(g.score) ? g.score : 0;
+          ng.m.score.best = isNum(g.best) ? g.best : null;
+          ng.m.bits.sum = estBits * g.count;
+        }
+        out.groups[kind][key] = ng;
+      }
+    });
+    return out;
   }
 
   function parse(text) {
     try {
       var d = JSON.parse(text);
       if (!d || !Array.isArray(d.records)) return emptyData();
-      return {
-        v: 1,
-        records: d.records.filter(isRecord),
-        archive: isArchive(d.archive) ? d.archive : null
-      };
+      return { v: 1, records: d.records.filter(isRecord), archive: readArchive(d.archive) };
     } catch (e) {
       return emptyData();
     }
@@ -353,7 +436,8 @@
         return rec;
       },
       records: function () { return data.records.slice(); },
-      summary: function (now) { return summarize(data, now); },
+      /** options: { metric: 'score' | 'bits', now: ms } */
+      summary: function (options) { return summarize(data, options); },
       count: function () { return data.records.length + (data.archive ? data.archive.count : 0); },
       isPersistent: function () { return persistent; },
       /** Re-read storage (e.g. after another tab saved). Kept in memory if storage isn't working. */
@@ -368,10 +452,11 @@
         return JSON.stringify({
           app: 'circle-judge',
           exportedAt: new Date().toISOString(),
-          summary: summarize(data),
+          summary: { score: summarize(data, { metric: 'score' }), bits: summarize(data, { metric: 'bits' }) },
           records: data.records.map(function (r) {
             var copy = {};
             for (var k in r) if (k !== 'shape') copy[k] = r[k];
+            if (copy.bits == null) copy.bits = round(metricOf(r, 'bits'), 3);
             return copy;
           })
         }, null, 2);
@@ -379,14 +464,14 @@
       toCSV: function () {
         var archived = data.archive ? data.archive.count : 0;
         var rows = [[
-          'circle', 'date', 'score', 'wobble_rms_pct', 'biggest_miss_pct', 'widest_minus_narrowest_pct',
-          'oval_pct', 'average_radius_px', 'sweep_deg', 'time_s', 'input', 'direction'
+          'circle', 'date', 'score', 'precision_bits', 'wobble_rms_pct', 'biggest_miss_pct',
+          'widest_minus_narrowest_pct', 'oval_pct', 'average_radius_px', 'sweep_deg', 'time_s', 'input', 'direction'
         ].join(',')];
         data.records.forEach(function (r, i) {
           rows.push([
             archived + i + 1,
             new Date(r.at).toISOString(),
-            r.score, r.wobble, r.miss, r.spread, r.oval, r.radius, r.sweep,
+            r.score, round(metricOf(r, 'bits'), 3), r.wobble, r.miss, r.spread, r.oval, r.radius, r.sweep,
             r.duration == null ? '' : (r.duration / 1000).toFixed(2),
             r.input, r.dir
           ].join(','));
@@ -400,6 +485,8 @@
     createStore: createStore,
     makeRecord: makeRecord,
     summarize: summarize,
+    metricOf: metricOf,
+    bitsFromWobble: bitsFromWobble,
     GROUPS: GROUPS,
     STORAGE_KEY: STORAGE_KEY
   };

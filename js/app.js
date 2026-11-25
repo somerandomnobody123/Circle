@@ -7,6 +7,7 @@
 
   var TAU = Math.PI * 2;
   var STROKE_WIDTH = 4;
+  var SCORING_KEY = 'circle-judge:scoring';
   var COLOR_RANGE = 0.08; // deviation (fraction of radius) shown as fully "off"
 
   var GRADES = [
@@ -35,7 +36,12 @@
 
   // Every connected (closed) circle is saved here; see js/stats.js.
   var store = CircleStats.createStore();
-  var statsView = StatsView.create({ store: store, dialog: statsDialog, onChange: updateBestChip });
+  var statsView = StatsView.create({
+    store: store,
+    dialog: statsDialog,
+    onChange: updateBestChip,
+    getMetric: function () { return SCORING[state.scoring].metric; }
+  });
 
   var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   var darkScheme = window.matchMedia('(prefers-color-scheme: dark)');
@@ -56,7 +62,9 @@
     pencilOnly: false,
     width: 0,
     height: 0,
-    colors: null
+    colors: null,
+    scoring: loadScoring(), // 'classic' (%) or 'precision' (bits)
+    saved: null             // outcome of saving the current result to the stats
   };
 
   // ---------- Utilities ----------
@@ -300,14 +308,78 @@
     render();
   }
 
+  // ---------- Scoring modes ----------
+
+  // Classic: the 0–100% score. Precision: bits = ½·log₂(1 + r̄²/σ²), no ceiling,
+  // infinite slope as the circle approaches perfect (see js/circle-fit.js).
+  var SCORING = {
+    classic: {
+      metric: 'score',
+      value: function (res) { return res.score; },
+      text: function (v) { return v.toFixed(1); },
+      unit: '%',
+      full: function (v) { return v.toFixed(1) + '%'; },
+      diff: function (v) { return v.toFixed(1) + ' points'; },
+      same: 0.05,
+      grade: function (res) { return gradeFor(res.score); },
+      color: function (res) { return scoreColorVar(res.score); },
+      speak: function (res) { return 'Score ' + res.score.toFixed(1) + ' percent. ' + gradeFor(res.score) + '.'; }
+    },
+    precision: {
+      metric: 'bits',
+      value: function (res) { return res.precision.bits; },
+      text: function (v) { return v.toFixed(2); },
+      unit: 'bits',
+      full: function (v) { return v.toFixed(2) + ' bits'; },
+      diff: function (v) { return v.toFixed(2) + ' bits'; },
+      same: 0.005,
+      grade: function (res) { return partsIn(res.precision.ratio); },
+      color: function () { return 'var(--text)'; },
+      speak: function (res) {
+        return 'Precision ' + res.precision.bits.toFixed(2) + ' bits. ' + partsIn(res.precision.ratio) + '.';
+      }
+    }
+  };
+
+  function loadScoring() {
+    try {
+      var v = window.localStorage.getItem(SCORING_KEY);
+      return v === 'precision' ? 'precision' : 'classic';
+    } catch (e) { return 'classic'; }
+  }
+
+  /** "1 part in N": the two-way RMS error is 1/N of the average radius. */
+  function partsIn(ratio) {
+    if (!isFinite(ratio) || ratio >= 1e6) return 'Better than 1 part in a million';
+    return '1 part in ' + Math.round(ratio).toLocaleString();
+  }
+
+  function setScoring(mode) {
+    state.scoring = SCORING[mode] ? mode : 'classic';
+    try { window.localStorage.setItem(SCORING_KEY, state.scoring); } catch (e) { /* per-device nicety only */ }
+    var buttons = document.querySelectorAll('[data-scoring]');
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].setAttribute('aria-pressed', buttons[i].getAttribute('data-scoring') === state.scoring ? 'true' : 'false');
+    }
+    updateBestChip();
+    if (state.mode === 'result' && state.result) {
+      var S = SCORING[state.scoring];
+      fillCard(state.result);
+      $('scoreValue').textContent = S.text(S.value(state.result) * state.anim);
+      placeCard();
+    }
+    if (statsView.isOpen()) statsView.refresh();
+  }
+
   function updateBestChip() {
-    var s = store.summary();
+    var S = SCORING[state.scoring];
+    var s = store.summary({ metric: S.metric });
     var btn = $('statsBtn');
     if (s.count) {
       $('bestLabel').textContent = 'Best';
-      $('bestValue').textContent = s.best.toFixed(1) + '%';
-      btn.setAttribute('aria-label', 'Your stats: best ' + s.best.toFixed(1) + '%, average ' +
-        s.average.toFixed(1) + '% over ' + s.count + (s.count === 1 ? ' circle' : ' circles'));
+      $('bestValue').textContent = S.full(s.best);
+      btn.setAttribute('aria-label', 'Your stats: best ' + S.full(s.best) + ', average ' +
+        S.full(s.average) + ' over ' + s.count + (s.count === 1 ? ' circle' : ' circles'));
     } else {
       $('bestLabel').textContent = 'Stats';
       $('bestValue').textContent = '';
@@ -353,10 +425,16 @@
   function fmt(v) { return v >= 100 ? v.toFixed(0) : v.toFixed(1); }
   function pct(v) { return (v * 100).toFixed(1) + '%'; }
 
-  function fillCard(res, isBest) {
-    $('grade').textContent = gradeFor(res.score);
-    $('score').style.setProperty('--score-color', scoreColorVar(res.score));
-    $('newBest').hidden = !isBest;
+  function fillCard(res) {
+    var S = SCORING[state.scoring];
+    var outcome = saveOutcome(res, state.saved, state.scoring);
+    $('grade').textContent = S.grade(res);
+    $('score').style.setProperty('--score-color', S.color(res));
+    $('scoreUnit').textContent = S.unit;
+    $('scoreUnit').classList.toggle('is-word', S.unit.length > 1);
+    $('newBest').hidden = !outcome.isBest;
+    $('savedNote').textContent = outcome.note;
+    $('savedNote').classList.toggle('is-unsaved', !state.saved.saved);
 
     var tip = tipFor(res);
     $('tip').hidden = !tip;
@@ -406,22 +484,25 @@
     card.dataset.place = best;
   }
 
-  /** Save the circle if its ends meet, and describe the outcome for the card. */
+  /** Save the circle if its ends meet, remembering the stats as they were before it. */
   function recordCircle(res, input) {
-    var before = store.summary();
+    var before = { score: store.summary({ metric: 'score' }), bits: store.summary({ metric: 'bits' }) };
     var rec = store.add(res, state.points, { input: input });
-    if (!rec) {
-      return { isBest: false, note: 'Not saved to your stats: only closed circles count.' };
-    }
-    updateBestChip();
-    if (!before.count) {
-      return { isBest: true, note: 'Saved: your first circle in your stats.' };
-    }
-    var diff = res.score - before.average;
-    var how = Math.abs(diff) < 0.05 ? 'right on' : diff.toFixed(1).replace('-', '') + ' points ' + (diff > 0 ? 'above' : 'below');
+    if (rec) updateBestChip();
+    return { saved: !!rec, before: before };
+  }
+
+  /** How this circle compares with the saved stats, in the given scoring mode. */
+  function saveOutcome(res, saved, mode) {
+    var S = SCORING[mode];
+    if (!saved.saved) return { isBest: false, note: 'Not saved to your stats: only closed circles count.' };
+    var before = saved.before[S.metric];
+    if (!before.count) return { isBest: true, note: 'Saved: your first circle in your stats.' };
+    var value = S.value(res), diff = value - before.average;
+    var how = Math.abs(diff) < S.same ? 'right on' : S.diff(Math.abs(diff)) + (diff > 0 ? ' above' : ' below');
     return {
-      isBest: res.score > before.best,
-      note: 'Saved: ' + how + ' your average of ' + before.average.toFixed(1) + '% (' + (before.count + 1) + ' circles now).'
+      isBest: value > before.best,
+      note: 'Saved: ' + how + ' your average of ' + S.full(before.average) + ' (' + (before.count + 1) + ' circles now).'
     };
   }
 
@@ -432,16 +513,13 @@
       return deviationColor(CircleFit.relativeDeviation(res, p.x, p.y));
     });
 
-    var saved = recordCircle(res, input);
-    $('savedNote').textContent = saved.note;
-    $('savedNote').classList.toggle('is-unsaved', !res.connected);
-
-    fillCard(res, saved.isBest);
+    state.saved = recordCircle(res, input);
+    fillCard(res);
     card.hidden = false;
     placeCard();
     void card.offsetWidth; // let the entrance transition run
     card.classList.add('is-visible');
-    announce.textContent = 'Score ' + res.score.toFixed(1) + ' percent. ' + gradeFor(res.score) + '.';
+    announce.textContent = SCORING[state.scoring].speak(res);
 
     var token = ++state.animToken;
     var duration = reduceMotion.matches ? 0 : 800;
@@ -452,7 +530,8 @@
       if (startTime == null) startTime = now;
       var t = duration ? clamp((now - startTime) / duration, 0, 1) : 1;
       state.anim = easeOutCubic(t);
-      scoreEl.textContent = (res.score * state.anim).toFixed(1);
+      var S = SCORING[state.scoring];
+      scoreEl.textContent = S.text(S.value(res) * state.anim);
       render();
       if (t < 1) window.requestAnimationFrame(frame);
     }
@@ -590,6 +669,9 @@
   });
 
   $('statsBtn').addEventListener('click', statsView.open);
+  Array.prototype.forEach.call(document.querySelectorAll('[data-scoring]'), function (btn) {
+    btn.addEventListener('click', function () { setScoring(btn.getAttribute('data-scoring')); });
+  });
   $('cardStatsBtn').addEventListener('click', statsView.open);
 
   // Another tab saved a circle: pick it up.
@@ -632,6 +714,6 @@
   window.addEventListener('orientationchange', function () { window.setTimeout(resize, 250); });
 
   readColors();
-  updateBestChip();
+  setScoring(state.scoring);
   resize();
 })();

@@ -30,6 +30,10 @@
         <span class="brand-name">Circle Judge</span>
       </div>
       <div class="actions">
+        <div class="seg" role="group" aria-label="Scoring mode">
+          <button type="button" data-scoring="classic" aria-pressed="true" title="Classic score: a percentage">%</button>
+          <button type="button" data-scoring="precision" aria-pressed="false" title="Precision: bits of accuracy, no upper limit">bits</button>
+        </div>
         <button type="button" class="chip chip-pencil" id="pencilChip" hidden aria-pressed="true"
                 title="Apple Pencil detected: touches from your hand are ignored. Tap to allow finger drawing.">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 17l1-4L13.5 3.5a2.1 2.1 0 013 3L7 16z M12 5l3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
@@ -54,7 +58,7 @@
 
     <section class="card" id="card" aria-label="Result" hidden>
       <div class="card-head">
-        <div class="score" id="score"><span id="scoreValue">0.0</span><span class="score-unit">%</span></div>
+        <div class="score" id="score"><span id="scoreValue">0.0</span><span class="score-unit" id="scoreUnit">%</span></div>
         <div class="verdict">
           <span class="new-best" id="newBest" hidden>New best</span>
           <span class="grade" id="grade">&nbsp;</span>
@@ -112,8 +116,11 @@
           <li><strong>Draw</strong> one loop in a single stroke, anywhere and any size. Nothing is marked out in advance: there is no target circle and no fixed center.</li>
           <li><strong>Locate the center.</strong> When you lift, the app works out where the center of <em>your</em> drawing is. It is the point whose distance to every part of your stroke is as even as possible (a least-squares best-fit circle, the usual reference for measuring roundness).</li>
           <li><strong>Average distance.</strong> Your radius is the average distance from that center to your stroke. The dashed circle shows it.</li>
-          <li><strong>Score.</strong> The app measures how far your stroke strays from that average, as a root-mean-square percentage of the radius. Every 1% of wobble costs 5 points, and leaving a gap in the loop costs about 3 points per 10&deg;. Going a little past the start is fine.</li>
+          <li><strong>Score (% mode).</strong> The app measures how far your stroke strays from that average, as a root-mean-square percentage of the radius. Every 1% of wobble costs 5 points, and leaving a gap in the loop costs about 3 points per 10&deg;. Going a little past the start is fine.</li>
         </ol>
+        <h3 class="help-sub">Two ways to score</h3>
+        <p class="help-note"><strong>% (classic):</strong> 100 minus 5 points per 1% of wobble, minus the gap penalty. Easy to read, but the 5 and the penalty are hand-picked.</p>
+        <p class="help-note"><strong>bits (precision):</strong> <span class="formula">p = &frac12;&middot;log<sub>2</sub>(1 + r&#772;&sup2;&thinsp;/&thinsp;&sigma;&sup2;) &asymp; log<sub>2</sub>(r&#772;&thinsp;/&thinsp;&sigma;)</span>. Here r&#772; is the average radius and &sigma; is the root-mean-square distance between your stroke and that circle, measured both ways (stroke to circle and circle to stroke), so a gap counts as error by itself. There are no tuning constants. Each extra bit means your wobble halved, and &ldquo;1 part in N&rdquo; means &sigma; is 1/N of the radius. The score has no ceiling: it climbs faster and faster, with infinite slope, as the circle approaches perfect. It is what an extreme exponent like 1&nbsp;&minus;&nbsp;(&sigma;/r&#772;)<sup>1/1000</sup> becomes once it is rescaled by 1000.</p>
         <p class="help-note">Your stroke is colored by how far each part is from the average radius. The ring marks the biggest miss. The stroke is resampled evenly along its length, so drawing faster or slower in places doesn&rsquo;t skew the result.</p>
         <p class="help-note"><strong>Stats:</strong> every closed circle, where the end of your stroke meets or crosses the start, is saved on this device. Open <em>Stats</em> to see your averages, trends and history, or to export them. Circles with a gap are still scored, but not saved.</p>
         <p class="help-note"><strong>iPad:</strong> once you draw with Apple Pencil, touches from your hand are ignored. Tap the <em>Pencil only</em> chip to draw with a finger again. <strong>Laptop:</strong> click and drag with a mouse or trackpad. Press <kbd>Esc</kbd> to clear.</p>
@@ -127,6 +134,10 @@
           <div>
             <h2 id="statsTitle">Your circle stats</h2>
             <p class="sheet-sub" id="statsSub">Closed circles saved on this device</p>
+            <div class="seg seg-wide" role="group" aria-label="Show stats as">
+              <button type="button" data-scoring="classic" aria-pressed="true">Score (%)</button>
+              <button type="button" data-scoring="precision" aria-pressed="false">Precision (bits)</button>
+            </div>
           </div>
           <form method="dialog"><button class="icon-btn close-btn" aria-label="Close stats">&times;</button></form>
         </header>
@@ -140,7 +151,7 @@
         <div class="stats-body" id="statsBody">
           <section class="kpis" aria-label="Headline numbers">
             <div class="kpi kpi-hero">
-              <span class="kpi-label">Average score</span>
+              <span class="kpi-label" id="kpiAverageLabel">Average score</span>
               <span class="kpi-value" id="kpiAverage">&mdash;</span>
               <span class="kpi-note" id="kpiAverageNote"></span>
             </div>
@@ -183,15 +194,15 @@
           <div class="panel-row">
             <section class="panel">
               <div class="panel-head">
-                <h3>How your scores spread</h3>
-                <p class="panel-sub">Number of circles in each 5-point band</p>
+                <h3 id="histTitle">How your scores spread</h3>
+                <p class="panel-sub" id="histSub">Number of circles in each 5-point band</p>
               </div>
               <div class="chart" id="histChart"></div>
             </section>
 
             <section class="panel">
               <div class="panel-head">
-                <h3>Average score by&hellip;</h3>
+                <h3 id="breakdownTitle">Average score by&hellip;</h3>
               </div>
               <div id="breakdowns"></div>
             </section>

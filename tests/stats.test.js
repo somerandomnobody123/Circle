@@ -70,7 +70,7 @@ test('summary averages, best, groups and histogram', () => {
     scores.push(res.score);
     store.add(res, pts, { input: i < 3 ? 'pen' : 'touch', at: 1000 + i });
   });
-  const s = store.summary(5000);
+  const s = store.summary({ now: 5000 });
   const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
   assert.equal(s.count, 4);
   assert.ok(Math.abs(s.average - avg) < 0.01);
@@ -150,5 +150,50 @@ test('CSV and JSON exports', () => {
   const json = JSON.parse(store.toJSON());
   assert.equal(json.records.length, 1);
   assert.equal(json.records[0].shape, undefined);
-  assert.equal(json.summary.count, 1);
+  assert.equal(json.summary.score.count, 1);
+  assert.equal(json.summary.bits.count, 1);
+  assert.ok(json.records[0].bits > 5);
+});
+
+test('bits metric: averages, best, groups and histogram in bits', () => {
+  const store = CircleStats.createStore({ storage: memoryStorage() });
+  const bits = [];
+  [0.004, 0.01, 0.02].forEach((w, i) => {
+    const { res, pts } = judge({ wobble: w, reverse: i === 1 });
+    bits.push(res.precision.bits);
+    store.add(res, pts, { input: 'pen' });
+  });
+  const s = store.summary({ metric: 'bits' });
+  assert.equal(s.metric, 'bits');
+  assert.ok(Math.abs(s.average - bits.reduce((a, b) => a + b, 0) / 3) < 0.01);
+  assert.ok(Math.abs(s.best - Math.max(...bits)) < 0.01);
+  assert.equal(s.groups.input[0].count, 3);
+  assert.ok(Math.abs(s.groups.input[0].average - s.average) < 1e-9);
+  assert.equal(s.histogram[0].label, '<3');
+  assert.equal(s.histogram.reduce((a, h) => a + h.count, 0), 3);
+  assert.ok(Math.abs(s.series[2].value - bits[2]) < 0.01);
+  // The score view of the same data is unaffected.
+  assert.equal(store.summary({ metric: 'score' }).metric, 'score');
+});
+
+test('records saved before precision existed get bits from their wobble', () => {
+  const storage = memoryStorage();
+  storage.setItem(CircleStats.STORAGE_KEY, JSON.stringify({
+    v: 1,
+    records: [{ at: 1, score: 95, radius: 150, wobble: 1, miss: 2, spread: 4, oval: 1, sweep: 365, duration: 1000, input: 'mouse', dir: 'cw' }],
+    archive: {
+      count: 2, score: 180, scoreSq: 16200, best: 91, bestAt: 0, wobble: 4, miss: 6, spread: 10, oval: 2,
+      duration: 2000, durationCount: 2, firstAt: 0,
+      groups: { input: { mouse: { count: 2, score: 180, best: 91 } }, dir: { cw: { count: 2, score: 180, best: 91 } }, size: { medium: { count: 2, score: 180, best: 91 } } }
+    }
+  }));
+  const store = CircleStats.createStore({ storage });
+  const s = store.summary({ metric: 'bits' });
+  assert.equal(s.count, 3);
+  const fromOne = CircleStats.bitsFromWobble(1);  // record: 1% wobble
+  const fromTwo = CircleStats.bitsFromWobble(2);  // archive: mean wobble 2%
+  assert.ok(Math.abs(fromOne - Math.log2(100)) < 0.001);
+  assert.ok(Math.abs(s.average - (fromOne + 2 * fromTwo) / 3) < 1e-9);
+  assert.equal(store.summary().average, (95 + 180) / 3);
+  assert.ok(store.toCSV().split('\n')[1].includes(',6.644,'));
 });

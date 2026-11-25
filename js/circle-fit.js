@@ -15,6 +15,19 @@
  *      average (RMS deviation as a fraction of the radius), with a small
  *      penalty for a loop that is not closed.
  *
+ * There are two ways to turn that into a number:
+ *
+ *   - Classic score (%): 100 − 5 × (RMS deviation as % of the radius), minus
+ *     a penalty for any gap in the loop. Easy to read, but the 5 and the gap
+ *     penalty are hand-picked.
+ *   - Precision (bits): ½·log₂(1 + r̄²/σ²) ≈ log₂(r̄/σ), where σ is the RMS
+ *     distance between the stroke and its average-radius circle, measured both
+ *     ways (stroke → circle and circle → stroke, so a gap counts as error with
+ *     no special penalty). It has no tuning constants: every extra bit means
+ *     the wobble halved, and it grows without limit, with infinite slope, as
+ *     the drawing approaches a perfect circle. It is the n → ∞ limit of
+ *     "1 − (σ/r̄)^(1/n)" scaled by n, i.e. of using an extreme exponent.
+ *
  * Works in the browser (window.CircleFit) and in Node (module.exports).
  */
 (function (root, factory) {
@@ -27,6 +40,10 @@
   'use strict';
 
   var TAU = Math.PI * 2;
+
+  // A double has 52 fraction bits, so no computed precision can exceed this.
+  var MAX_BITS = 52;
+  var CIRCLE_PROBES = 512; // points on the reference circle used for circle → stroke distances
 
   var DEFAULTS = {
     minRadius: 20,          // px; smaller strokes are rejected as too small
@@ -227,6 +244,41 @@
     return Math.hypot(px - (a.x + dx * t), py - (a.y + dy * t));
   }
 
+  /**
+   * RMS distance from evenly spaced points on the circle (cx, cy, r) to the
+   * nearest point of the stroke. Where the loop has a gap, the circle points
+   * inside it are far from the stroke, so gaps count as error by themselves.
+   */
+  function circleToStrokeRms(samples, cx, cy, r, probes) {
+    var n = samples.length, sum = 0;
+    for (var k = 0; k < probes; k++) {
+      var a = (k / probes) * TAU;
+      var px = cx + r * Math.cos(a), py = cy + r * Math.sin(a);
+      var best = Infinity, bi = 0;
+      for (var i = 0; i < n; i++) {
+        var dx = samples[i].x - px, dy = samples[i].y - py, d2 = dx * dx + dy * dy;
+        if (d2 < best) { best = d2; bi = i; }
+      }
+      // Refine from the nearest sample to the nearest point on the segments either side of it.
+      var d = Math.sqrt(best);
+      if (bi > 0) d = Math.min(d, pointSegmentDistance(px, py, samples[bi - 1], samples[bi]));
+      if (bi < n - 1) d = Math.min(d, pointSegmentDistance(px, py, samples[bi], samples[bi + 1]));
+      sum += d * d;
+    }
+    return Math.sqrt(sum / probes);
+  }
+
+  /**
+   * Bits of precision for a circle of radius r drawn with RMS error sigma:
+   * ½·log₂(1 + r²/σ²), the Shannon–Hartley form, which is ≈ log₂(r/σ) for any
+   * real circle and never negative. Infinite (capped at MAX_BITS) when σ = 0.
+   */
+  function precisionBits(radius, sigma) {
+    if (!(sigma > 0)) return MAX_BITS;
+    var ratio = radius / sigma;
+    return Math.min(MAX_BITS, 0.5 * Math.log2(1 + ratio * ratio));
+  }
+
   function segmentsCross(a, b, c, d) {
     var d1 = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
     var d2 = (b.x - a.x) * (d.y - a.y) - (b.y - a.y) * (d.x - a.x);
@@ -361,6 +413,17 @@
       share: rms > 0 ? Math.min(1, (ovalAmp * ovalAmp / 2) / (rms * rms)) : 0
     };
 
+    // Precision: RMS distance between stroke and circle, measured both ways.
+    var circleRms = circleToStrokeRms(samples, cx, cy, radius, CIRCLE_PROBES);
+    var sigma = Math.sqrt((rms * rms + circleRms * circleRms) / 2);
+    var precision = {
+      bits: precisionBits(radius, sigma),
+      sigma: sigma,                      // px, two-way RMS distance
+      strokeRms: rms,                    // px, stroke → circle (same as rms)
+      circleRms: circleRms,              // px, circle → stroke
+      ratio: sigma > 0 ? radius / sigma : Infinity // "accurate to 1 part in ratio"
+    };
+
     var gapTurns = Math.max(0, 1 - turns);
     if (gapTurns * 360 < 0.5) gapTurns = 0; // ignore rounding-level gaps
     var roundness = 100 * (1 - opts.wobblePenalty * relRms);
@@ -387,6 +450,7 @@
       maxRadius: maxR,
       peakToValley: maxR - minR,         // classic "out-of-roundness" figure, px
       oval: oval,
+      precision: precision,
       sweptDegrees: turns * 360,
       direction: swept >= 0 ? 1 : -1,    // +1 clockwise on screen (y points down)
       startAngle: Math.atan2(first.y - cy, first.x - cx),
@@ -408,6 +472,8 @@
   return {
     analyze: analyze,
     relativeDeviation: relativeDeviation,
+    precisionBits: precisionBits,
+    MAX_BITS: MAX_BITS,
     locateCenter: locateCenter,
     resample: resample,
     kasaFit: kasaFit,

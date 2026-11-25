@@ -160,6 +160,42 @@ test('connected: ends that meet or cross count, gaps and spirals do not', () => 
   assert.equal(s.connected, false);
 });
 
+test('precision: bits = log2(radius / RMS error), one bit per halving', () => {
+  // Uniform noise of ±a has RMS a/√3.
+  const bits = [8, 4, 2, 1].map((a) => CircleFit.analyze(circle({ r: 200, n: 2000, noise: a, seed: 11 })).precision.bits);
+  for (let i = 1; i < bits.length; i++) {
+    const gain = bits[i] - bits[i - 1];
+    assert.ok(gain > 0.8 && gain < 1.2, `halving the noise gained ${gain.toFixed(2)} bits`);
+  }
+  const res = CircleFit.analyze(circle({ r: 200, noise: 2, seed: 4 }));
+  const p = res.precision;
+  assert.ok(Math.abs(p.bits - 0.5 * Math.log2(1 + (res.radius / p.sigma) ** 2)) < 1e-9);
+  assert.ok(Math.abs(p.bits - Math.log2(p.ratio)) < 0.001);
+  assert.ok(Math.abs(p.strokeRms - res.rms) < 1e-12);
+});
+
+test('precision: infinite slope at perfection, capped at double precision', () => {
+  const { precisionBits, MAX_BITS } = CircleFit;
+  assert.equal(precisionBits(100, 0), MAX_BITS);
+  // Equal steps toward zero error buy ever more bits: the slope keeps growing.
+  const slope = (s) => (precisionBits(100, s) - precisionBits(100, s * 1.001)) / (s * 0.001);
+  assert.ok(slope(1e-3) > 1000 * slope(1));
+  assert.ok(slope(1e-6) > 1000 * slope(1e-3));
+  // It is the n → ∞ limit of an extreme exponent: n·(1 − x^(1/n)) → ln(1/x).
+  const x = 0.01, n = 1e6;
+  assert.ok(Math.abs(n * (1 - Math.pow(x, 1 / n)) / Math.LN2 - Math.log2(1 / x)) < 1e-3);
+  assert.ok(precisionBits(100, 100) > 0 && precisionBits(100, 1e6) >= 0);
+});
+
+test('precision: gaps cost bits without any penalty constant', () => {
+  const closed = CircleFit.analyze(circle({ turns: 1, noise: 2, seed: 2 })).precision.bits;
+  const small = CircleFit.analyze(circle({ turns: 0.97, noise: 2, seed: 2 })).precision.bits;
+  const big = CircleFit.analyze(circle({ turns: 0.85, noise: 2, seed: 2 })).precision.bits;
+  assert.ok(closed > small && small > big, `${closed} > ${small} > ${big}`);
+  const over = CircleFit.analyze(circle({ turns: 1.1, noise: 2, seed: 2 })).precision.bits;
+  assert.ok(Math.abs(over - closed) < 0.3, 'overshooting is not penalised');
+});
+
 test('direction of drawing does not matter', () => {
   const cw = CircleFit.analyze(circle({ noise: 3, seed: 9 }));
   const ccw = CircleFit.analyze(circle({ noise: 3, seed: 9 }).reverse());
