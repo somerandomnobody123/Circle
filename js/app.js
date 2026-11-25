@@ -8,6 +8,8 @@
   var TAU = Math.PI * 2;
   var STROKE_WIDTH = 4;
   var SCORING_KEY = 'circle-judge:scoring';
+  var TRACE_KEY = 'circle-judge:trace';
+  var TRACE_MIN = 40; // smallest guide radius, px
   var COLOR_RANGE = 0.08; // deviation (fraction of radius) shown as fully "off"
 
   var GRADES = [
@@ -23,6 +25,15 @@
     [0, 'Is that a circle?']
   ];
 
+  var TRACE_GRADES = [
+    [97, 'Right on the line'],
+    [92, 'Very close'],
+    [85, 'Close'],
+    [75, 'Near the line'],
+    [60, 'Drifting off'],
+    [0, 'Off the guide']
+  ];
+
   var $ = function (id) { return document.getElementById(id); };
   var canvas = $('board');
   var ctx = canvas.getContext('2d');
@@ -33,6 +44,12 @@
   var help = $('help');
   var pencilChip = $('pencilChip');
   var statsDialog = $('statsDialog');
+  var app = document.querySelector('.app');
+  var topbar = document.querySelector('.topbar');
+  var traceBtn = $('traceBtn');
+  var traceBar = $('traceBar');
+  var traceSize = $('traceSize');
+  var traceHide = $('traceHide');
 
   // Every connected (closed) circle is saved here; see js/stats.js.
   var store = CircleStats.createStore();
@@ -64,7 +81,10 @@
     height: 0,
     colors: null,
     scoring: loadScoring(), // 'classic' (%) or 'precision' (bits)
-    saved: null             // outcome of saving the current result to the stats
+    saved: null,            // outcome of saving the current result to the stats
+    trace: loadTrace(),     // trace practice: { on, radius, hide }
+    attemptTarget: null,    // guide circle the current stroke is traced against
+    practice: []            // this session's traces: { score, bits }
   };
 
   // ---------- Utilities ----------
@@ -116,8 +136,111 @@
     canvas.width = Math.max(1, Math.round(rect.width * dpr));
     canvas.height = Math.max(1, Math.round(rect.height * dpr));
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    updateTraceUI();
     render();
     if (state.mode === 'result') placeCard();
+  }
+
+  // ---------- Trace practice ----------
+
+  function loadTrace() {
+    var t = { on: false, radius: 150, hide: false };
+    try {
+      var saved = JSON.parse(window.localStorage.getItem(TRACE_KEY) || 'null');
+      if (saved && typeof saved === 'object') {
+        t.on = saved.on === true;
+        if (isFinite(saved.radius) && saved.radius >= TRACE_MIN) t.radius = Math.round(saved.radius);
+        t.hide = saved.hide === true;
+      }
+    } catch (e) { /* defaults */ }
+    return t;
+  }
+
+  function saveTrace() {
+    try { window.localStorage.setItem(TRACE_KEY, JSON.stringify(state.trace)); } catch (e) { /* per-device nicety only */ }
+  }
+
+  /** Where the guide sits: centered in the space between the top bar and the trace bar. */
+  function traceGeometry() {
+    var top = topbar.getBoundingClientRect().bottom;
+    var bottom = traceBar.hidden ? state.height : traceBar.getBoundingClientRect().top;
+    var maxR = Math.floor(Math.min(state.width / 2, (bottom - top) / 2) - 16);
+    return { x: state.width / 2, y: (top + bottom) / 2, maxR: Math.max(TRACE_MIN, maxR) };
+  }
+
+  function currentTarget() {
+    var g = traceGeometry();
+    return { x: g.x, y: g.y, r: clamp(state.trace.radius, TRACE_MIN, g.maxR) };
+  }
+
+  function updateHint() {
+    var tracing = state.trace.on;
+    $('hintTitle').textContent = tracing ? 'Trace the circle' : 'Draw a circle';
+    $('hintSub').textContent = tracing
+      ? 'Follow the dashed guide in one stroke. Practice only: traces aren\u2019t saved to your stats.'
+      : 'One stroke, any size, anywhere. Lift to be judged.';
+    hint.classList.toggle('is-trace', tracing);
+  }
+
+  function updateTraceUI() {
+    var on = state.trace.on;
+    traceBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    traceBar.hidden = !on;
+    app.classList.toggle('is-tracing', on);
+    app.style.setProperty('--tracebar-h', (on ? traceBar.offsetHeight : 0) + 'px');
+    traceHide.checked = state.trace.hide;
+    if (on && state.width) {
+      var g = traceGeometry();
+      traceSize.max = String(g.maxR);
+      var r = clamp(state.trace.radius, TRACE_MIN, g.maxR);
+      traceSize.value = String(r);
+      $('traceSizeValue').textContent = r + ' px';
+    }
+    updateHint();
+  }
+
+  function setTraceMode(on) {
+    state.trace.on = !!on;
+    saveTrace();
+    clearBoard();
+    updateTraceUI();
+    render();
+    if (!on) showToast('Free drawing: closed circles are saved to your stats.');
+  }
+
+  function setTraceRadius(r) {
+    var g = traceGeometry();
+    state.trace.radius = Math.round(clamp(r, TRACE_MIN, g.maxR));
+    saveTrace();
+    if (state.mode === 'result' || state.mode === 'error') clearBoard();
+    updateTraceUI();
+    render();
+  }
+
+  function randomTraceRadius() {
+    var g = traceGeometry();
+    var current = clamp(state.trace.radius, TRACE_MIN, g.maxR), r = current;
+    // Pick a size that is noticeably different from the current one.
+    for (var i = 0; i < 20 && Math.abs(r - current) < (g.maxR - TRACE_MIN) * 0.15; i++) {
+      r = TRACE_MIN + Math.random() * (g.maxR - TRACE_MIN);
+    }
+    setTraceRadius(r);
+  }
+
+  function drawTraceGuide(target) {
+    var c = state.colors;
+    ctx.save();
+    setStrokeStyle(2.5);
+    ctx.setLineDash([8, 8]);
+    ctx.strokeStyle = c.inkMuted;
+    ctx.beginPath();
+    ctx.arc(target.x, target.y, target.r, 0, TAU);
+    ctx.stroke();
+    ctx.fillStyle = c.inkMuted;
+    ctx.beginPath();
+    ctx.arc(target.x, target.y, 3, 0, TAU);
+    ctx.fill();
+    ctx.restore();
   }
 
   // ---------- Rendering ----------
@@ -133,6 +256,9 @@
 
   function render() {
     ctx.clearRect(0, 0, state.width, state.height);
+    if (state.trace.on && state.mode !== 'result' && !(state.mode === 'drawing' && state.trace.hide)) {
+      drawTraceGuide(state.mode === 'idle' || !state.attemptTarget ? currentTarget() : state.attemptTarget);
+    }
     if (!state.points.length) return;
     if (state.mode === 'result' && state.result) {
       drawColoredStroke();
@@ -223,7 +349,9 @@
     ctx.globalAlpha = 0.95;
     ctx.beginPath();
     var start = res.startAngle;
-    ctx.arc(cx, cy, r, start, start + res.direction * TAU * progress, res.direction < 0);
+    // A trace's guide was already on screen, so it is drawn whole rather than traced in.
+    var sweep = res.trace ? 1 : progress;
+    ctx.arc(cx, cy, r, start, start + res.direction * TAU * sweep, res.direction < 0);
     ctx.stroke();
     ctx.restore();
 
@@ -240,7 +368,7 @@
       ctx.moveTo(cx, cy);
       ctx.lineTo(ex, ey);
       ctx.stroke();
-      if (r >= 90) pill((cx + ex) / 2, (cy + ey) / 2, 'avg r ' + Math.round(r) + ' px');
+      if (r >= 90) pill((cx + ex) / 2, (cy + ey) / 2, (res.trace ? 'guide r ' : 'avg r ') + Math.round(r) + ' px');
       ctx.restore();
     }
 
@@ -260,6 +388,21 @@
     ctx.beginPath();
     ctx.arc(cx, cy, 3.5, 0, TAU);
     ctx.fill();
+
+    // Trace: where your own circle's center landed, joined to the guide's.
+    if (res.trace && res.fit && res.fit.ok) {
+      var fx = res.fit.center.x, fy = res.fit.center.y;
+      ctx.strokeStyle = c.text;
+      if (Math.hypot(fx - cx, fy - cy) > 2) {
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(fx, fy);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(fx, fy, 5, 0, TAU);
+      ctx.stroke();
+    }
     ctx.restore();
 
     // Biggest miss.
@@ -304,6 +447,7 @@
     state.pieceColors = null;
     hideCard();
     hideToast();
+    updateHint();
     hint.classList.remove('is-hidden');
     render();
   }
@@ -321,9 +465,9 @@
       full: function (v) { return v.toFixed(1) + '%'; },
       diff: function (v) { return v.toFixed(1) + ' points'; },
       same: 0.05,
-      grade: function (res) { return gradeFor(res.score); },
+      grade: function (res) { return gradeFor(res); },
       color: function (res) { return scoreColorVar(res.score); },
-      speak: function (res) { return 'Score ' + res.score.toFixed(1) + ' percent. ' + gradeFor(res.score) + '.'; }
+      speak: function (res) { return 'Score ' + res.score.toFixed(1) + ' percent. ' + gradeFor(res) + '.'; }
     },
     precision: {
       metric: 'bits',
@@ -387,16 +531,37 @@
     }
   }
 
-  function gradeFor(score) {
-    for (var i = 0; i < GRADES.length; i++) if (score >= GRADES[i][0]) return GRADES[i][1];
-    return GRADES[GRADES.length - 1][1];
+  function gradeFor(res) {
+    var table = res.trace ? TRACE_GRADES : GRADES;
+    for (var i = 0; i < table.length; i++) if (res.score >= table[i][0]) return table[i][1];
+    return table[table.length - 1][1];
   }
 
   function scoreColorVar(score) {
     return score >= 85 ? 'var(--good-text)' : score >= 60 ? 'var(--mid-text)' : 'var(--bad-text)';
   }
 
+  function directionWords(dx, dy) {
+    var len = Math.hypot(dx, dy) || 1;
+    var parts = [];
+    if (Math.abs(dy) > 0.38 * len) parts.push(dy < 0 ? 'above' : 'below');
+    if (Math.abs(dx) > 0.38 * len) parts.push('to the ' + (dx > 0 ? 'right' : 'left'));
+    return parts.join(' and ');
+  }
+
   function tipFor(res) {
+    if (res.trace && res.connected) {
+      var R = res.radius;
+      var off = res.centerOffset ? Math.hypot(res.centerOffset.x, res.centerOffset.y) : 0;
+      if (Math.abs(res.bias) / R >= 0.02 && Math.abs(res.bias) >= off) {
+        return 'You ran ' + Math.round(Math.abs(res.bias)) + ' px ' + (res.bias > 0 ? 'outside' : 'inside') +
+          ' the guide on average: ' + pct(Math.abs(res.bias) / R) + (res.bias > 0 ? ' too big.' : ' too small.');
+      }
+      if (off / R >= 0.02) {
+        return 'Your circle sat ' + Math.round(off) + ' px ' + directionWords(res.centerOffset.x, res.centerOffset.y) + ' of the guide.';
+      }
+      if (!res.oval) return res.score < 88 ? 'Lumpy in places. A steady speed and a relaxed wrist help.' : null;
+    }
     if (!res.connected) {
       return res.gapDegrees >= 2
         ? 'Close the loop: there’s a ' + Math.round(res.gapDegrees) + '° gap between your start and finish.'
@@ -412,14 +577,74 @@
     return null;
   }
 
-  function setStat(id, main, sub) {
-    var el = $(id);
-    el.textContent = main;
-    if (sub) {
-      var small = document.createElement('small');
-      small.textContent = ' ' + sub;
-      el.appendChild(small);
+  /** Fill the card's stat tiles from [label, value, sub, { miss: true }] rows. */
+  function setTiles(rows) {
+    var dl = $('stats');
+    dl.textContent = '';
+    rows.forEach(function (row) {
+      var tile = document.createElement('div');
+      tile.className = 'stat';
+      var dt = document.createElement('dt');
+      if (row[3] && row[3].miss) {
+        var dot = document.createElement('span');
+        dot.className = 'miss-dot';
+        dot.setAttribute('aria-hidden', 'true');
+        dt.appendChild(dot);
+      }
+      dt.appendChild(document.createTextNode(row[0]));
+      var dd = document.createElement('dd');
+      dd.textContent = row[1];
+      if (row[2]) {
+        var small = document.createElement('small');
+        small.textContent = ' ' + row[2];
+        dd.appendChild(small);
+      }
+      tile.appendChild(dt);
+      tile.appendChild(dd);
+      dl.appendChild(tile);
+    });
+  }
+
+  function loopTile(res) {
+    if (res.connected) {
+      var extra = res.sweptDegrees - 360;
+      return ['Loop', 'Closed', extra >= 5 ? '+' + Math.round(extra) + '\u00b0' : null];
     }
+    if (res.gapDegrees >= 2) return ['Loop', 'Gap', Math.round(res.gapDegrees) + '\u00b0'];
+    return ['Loop', 'Open', Math.round(res.endGap) + ' px apart'];
+  }
+
+  function missTile(res) {
+    return ['Biggest miss', fmt(Math.abs(res.maxDeviation)) + ' px',
+      pct(Math.abs(res.maxDeviation) / res.radius) + (res.maxDeviation >= 0 ? ' out' : ' in'), { miss: true }];
+  }
+
+  function freehandTiles(res) {
+    return [
+      ['Average radius', fmt(res.radius) + ' px'],
+      ['Wobble (RMS)', '\u00b1' + fmt(res.rms) + ' px', pct(res.relativeRms)],
+      missTile(res),
+      ['Widest \u2212 narrowest', fmt(res.peakToValley) + ' px', pct(res.peakToValley / res.radius)],
+      loopTile(res),
+      ['Time', res.duration == null ? '\u2014' : (res.duration / 1000).toFixed(1) + ' s']
+    ];
+  }
+
+  function traceTiles(res) {
+    var S = SCORING[state.scoring];
+    var R = res.radius, fit = res.fit;
+    var size = Math.abs(res.bias) < 0.05
+      ? ['Size vs guide', 'Spot on']
+      : ['Size vs guide', (res.bias > 0 ? '+' : '\u2212') + fmt(Math.abs(res.bias)) + ' px', pct(Math.abs(res.bias) / R)];
+    var off = res.centerOffset ? Math.hypot(res.centerOffset.x, res.centerOffset.y) : null;
+    return [
+      ['Off the guide (RMS)', '\u00b1' + fmt(res.rms) + ' px', pct(res.relativeRms)],
+      missTile(res),
+      size,
+      ['Center offset', off == null ? '\u2014' : fmt(off) + ' px', off == null ? null : pct(off / R)],
+      ['Shape alone', fit.ok ? S.full(S.value(fit)) : '\u2014'],
+      loopTile(res)
+    ];
   }
 
   function fmt(v) { return v >= 100 ? v.toFixed(0) : v.toFixed(1); }
@@ -427,33 +652,23 @@
 
   function fillCard(res) {
     var S = SCORING[state.scoring];
-    var outcome = saveOutcome(res, state.saved, state.scoring);
+    var outcome = res.trace ? practiceOutcome(res, state.scoring) : saveOutcome(res, state.saved, state.scoring);
     $('grade').textContent = S.grade(res);
+    $('method').textContent = res.trace ? 'Measured against the guide' : 'Center found after drawing';
     $('score').style.setProperty('--score-color', S.color(res));
     $('scoreUnit').textContent = S.unit;
     $('scoreUnit').classList.toggle('is-word', S.unit.length > 1);
     $('newBest').hidden = !outcome.isBest;
+    $('newBest').textContent = res.trace ? 'Session best' : 'New best';
     $('savedNote').textContent = outcome.note;
-    $('savedNote').classList.toggle('is-unsaved', !state.saved.saved);
+    $('savedNote').classList.toggle('is-unsaved', !res.trace && !state.saved.saved);
+    $('savedNote').classList.toggle('is-practice', !!res.trace);
 
     var tip = tipFor(res);
     $('tip').hidden = !tip;
     $('tip').textContent = tip || '';
 
-    setStat('statRadius', fmt(res.radius) + ' px');
-    setStat('statRms', '±' + fmt(res.rms) + ' px', pct(res.relativeRms));
-    setStat('statMax', fmt(Math.abs(res.maxDeviation)) + ' px',
-      pct(Math.abs(res.maxDeviation) / res.radius) + (res.maxDeviation >= 0 ? ' out' : ' in'));
-    setStat('statPtv', fmt(res.peakToValley) + ' px', pct(res.peakToValley / res.radius));
-    if (res.connected) {
-      var extra = res.sweptDegrees - 360;
-      setStat('statLoop', 'Closed', extra >= 5 ? '+' + Math.round(extra) + '°' : null);
-    } else if (res.gapDegrees >= 2) {
-      setStat('statLoop', 'Gap', Math.round(res.gapDegrees) + '°');
-    } else {
-      setStat('statLoop', 'Open', Math.round(res.endGap) + ' px apart');
-    }
-    setStat('statTime', res.duration == null ? '—' : (res.duration / 1000).toFixed(1) + ' s');
+    setTiles(res.trace ? traceTiles(res) : freehandTiles(res));
   }
 
   function overlapArea(a, b) {
@@ -472,6 +687,10 @@
       box.left = Math.min(box.left, p.x); box.right = Math.max(box.right, p.x);
       box.top = Math.min(box.top, p.y); box.bottom = Math.max(box.bottom, p.y);
     });
+    if (res.trace) {
+      box.left = Math.min(box.left, res.center.x - res.radius); box.right = Math.max(box.right, res.center.x + res.radius);
+      box.top = Math.min(box.top, res.center.y - res.radius); box.bottom = Math.max(box.bottom, res.center.y + res.radius);
+    }
     box.left -= pad; box.top -= pad; box.right += pad; box.bottom += pad;
 
     var options = state.width >= 900 ? ['right', 'left', 'bottom', 'top'] : ['bottom', 'top'];
@@ -506,6 +725,20 @@
     };
   }
 
+  /** Session tally for trace practice (traces are not saved to the stats). */
+  function practiceOutcome(res, mode) {
+    var S = SCORING[mode];
+    var values = state.practice.map(function (p) { return S.metric === 'bits' ? p.bits : p.score; });
+    var n = values.length;
+    var current = values[n - 1];
+    var previousBest = n > 1 ? Math.max.apply(null, values.slice(0, -1)) : null;
+    var avg = values.reduce(function (a, b) { return a + b; }, 0) / n;
+    var note = 'Practice, not saved to your stats. ' +
+      (n === 1 ? 'First trace this session.'
+        : n + ' traces this session: average ' + S.full(avg) + ', best ' + S.full(Math.max(previousBest, current)) + '.');
+    return { isBest: n > 1 && current > previousBest, note: note };
+  }
+
   function showResult(res, input) {
     state.result = res;
     state.mode = 'result';
@@ -513,13 +746,18 @@
       return deviationColor(CircleFit.relativeDeviation(res, p.x, p.y));
     });
 
-    state.saved = recordCircle(res, input);
+    if (res.trace) {
+      state.saved = null;
+      state.practice.push({ score: res.score, bits: res.precision.bits });
+    } else {
+      state.saved = recordCircle(res, input);
+    }
     fillCard(res);
     card.hidden = false;
     placeCard();
     void card.offsetWidth; // let the entrance transition run
     card.classList.add('is-visible');
-    announce.textContent = SCORING[state.scoring].speak(res);
+    announce.textContent = (res.trace ? 'Trace. ' : '') + SCORING[state.scoring].speak(res);
 
     var token = ++state.animToken;
     var duration = reduceMotion.matches ? 0 : 800;
@@ -574,6 +812,7 @@
     state.points = [];
     state.result = null;
     state.pieceColors = null;
+    state.attemptTarget = state.trace.on ? currentTarget() : null;
     hideCard();
     hideToast();
     hint.classList.add('is-hidden');
@@ -593,7 +832,7 @@
       clearBoard(); // a tap or a tiny scribble just clears the board
       return;
     }
-    var res = CircleFit.analyze(pts);
+    var res = state.attemptTarget ? CircleFit.analyzeTrace(pts, state.attemptTarget) : CircleFit.analyze(pts);
     if (!res.ok) {
       state.mode = 'error';
       render();
@@ -662,6 +901,14 @@
   // ---------- Controls ----------
 
   $('againBtn').addEventListener('click', clearBoard);
+
+  traceBtn.addEventListener('click', function () { setTraceMode(!state.trace.on); });
+  traceSize.addEventListener('input', function () { setTraceRadius(parseFloat(traceSize.value)); });
+  $('traceRandom').addEventListener('click', randomTraceRadius);
+  traceHide.addEventListener('change', function () {
+    state.trace.hide = traceHide.checked;
+    saveTrace();
+  });
 
   pencilChip.addEventListener('click', function () {
     setPencilOnly(!state.pencilOnly);

@@ -33,6 +33,22 @@ Typical values: a careful freehand circle is about 6–7 bits (1 part in 60–13
 
 The result card shows the average radius, the RMS wobble, the biggest miss (ringed on the drawing), widest minus narrowest radius, whether the loop closed, and the time taken. The stroke is colored from green (on the average radius) to red (8% or more off). If the shape is mostly oval, the card says which way it's stretched.
 
+## Trace practice
+
+Tap **Trace** in the top bar to practise on a guide circle:
+
+- **Variable size:** set the guide's radius with the slider, or tap **Random size** for a new one. The largest size is whatever fits on the screen.
+- **Hide guide while drawing:** the guide disappears once you start the stroke, so you draw it from memory.
+- **Judged against the guide:** unlike free drawing, the reference circle is known in advance. The same formulas apply, with the guide's center and radius in place of the located ones:
+  - **% mode:** `100 − 5 × RMS distance from the guide (% of its radius)`, minus the gap penalty.
+  - **bits mode:** `½·log₂(1 + R² / σ²)`, with σ measured both ways against the guide.
+
+  Drawing too big, too small or off-center all count as error.
+- **The card** shows how far off the guide you were, the biggest miss, your size error, and how far your circle's located center landed from the guide's. **Shape alone** scores the same stroke free-hand, around its own center, so you can tell a round but misplaced circle from a lumpy one. The tips name the main problem, e.g. "You ran 12 px outside the guide on average" or "Your circle sat 17 px above and to the right of the guide".
+- **Practice only:** traces aren't saved to your stats. The card keeps a running count, average and best for the session.
+
+The trace settings (on/off, radius, hide guide) are remembered on each device.
+
 ## Stats
 
 Every **connected** circle is saved: one whose end meets or crosses its start (within 8 px, or 4% of the radius on big circles). Circles with a gap, or spirals whose ends never meet, are still scored but not saved. Half circles and other rejected strokes aren't saved either. After each circle the result card says whether it was saved and how it compares with your average.
@@ -78,7 +94,7 @@ npm test           # unit tests for the fitting, scoring and stats (Node 18+)
 | --- | --- |
 | `index.html` | Page markup |
 | `css/styles.css` | Styles, light and dark |
-| `js/circle-fit.js` | Center location, average radius and scoring (no DOM; also runs in Node) |
+| `js/circle-fit.js` | Center location, average radius and scoring, free-hand and traced (no DOM; also runs in Node) |
 | `js/stats.js` | Saving connected circles and working out the averages (no DOM; also runs in Node) |
 | `js/stats-view.js` | The stats panel and its charts |
 | `js/app.js` | Drawing input, rendering, result card |

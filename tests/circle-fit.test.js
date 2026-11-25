@@ -222,3 +222,43 @@ test('resample produces evenly spaced points that keep both ends', () => {
     assert.ok(Math.abs(d - 1) < 1e-6 || (i === 10 && d < 1.0001), `gap ${d} at ${i}`);
   }
 });
+
+// ---------- Trace mode ----------
+
+test('trace: following the guide exactly scores ~100', () => {
+  const target = { x: 400, y: 300, r: 150 };
+  const res = CircleFit.analyzeTrace(circle({ cx: 400, cy: 300, r: 150 }), target);
+  assert.equal(res.ok, true);
+  assert.equal(res.trace, true);
+  assert.ok(res.score > 99.5, `score ${res.score}`);
+  assert.ok(res.precision.bits > 12);
+  assert.deepEqual(res.center, { x: 400, y: 300 });
+  assert.equal(res.radius, 150);
+  assert.ok(res.fit.ok && res.fit.score > 99.5);
+});
+
+test('trace: a perfect circle in the wrong size or place scores low, but its shape scores high', () => {
+  const target = { x: 400, y: 300, r: 150 };
+  const big = CircleFit.analyzeTrace(circle({ cx: 400, cy: 300, r: 165 }), target);
+  assert.ok(Math.abs(big.bias - 15) < 0.5, `bias ${big.bias}`);
+  assert.ok(big.score < 55, `score ${big.score}`);
+  assert.ok(big.fit.score > 99.5);
+
+  const shifted = CircleFit.analyzeTrace(circle({ cx: 412, cy: 291, r: 150 }), target);
+  assert.ok(Math.abs(shifted.centerOffset.x - 12) < 0.5 && Math.abs(shifted.centerOffset.y + 9) < 0.5);
+  assert.ok(shifted.score < 90 && shifted.fit.score > 99.5);
+  assert.ok(shifted.precision.bits < shifted.fit.precision.bits - 3);
+});
+
+test('trace: errors grow with wobble, gaps are penalised, partial traces rejected', () => {
+  const target = { x: 400, y: 300, r: 150 };
+  const a = CircleFit.analyzeTrace(circle({ r: 150, noise: 2, seed: 3 }), target);
+  const b = CircleFit.analyzeTrace(circle({ r: 150, noise: 6, seed: 3 }), target);
+  assert.ok(a.score > b.score && a.precision.bits > b.precision.bits);
+  const gap = CircleFit.analyzeTrace(circle({ r: 150, noise: 2, seed: 3, turns: 0.9 }), target);
+  assert.ok(gap.ok && !gap.connected && gap.score < a.score - 8);
+  assert.equal(CircleFit.analyzeTrace(circle({ r: 150, turns: 0.5 }), target).reason, 'open');
+  assert.equal(CircleFit.analyzeTrace(circle({ r: 150, turns: 2 }), target).reason, 'loops');
+  // Deviation colors are measured from the guide.
+  assert.ok(Math.abs(CircleFit.relativeDeviation(gap, 400 + 165, 300) - 0.1) < 1e-9);
+});

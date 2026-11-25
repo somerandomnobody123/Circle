@@ -39,6 +39,11 @@
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 17l1-4L13.5 3.5a2.1 2.1 0 013 3L7 16z M12 5l3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
           <span id="pencilLabel">Pencil only</span>
         </button>
+        <button type="button" class="chip chip-trace" id="traceBtn" aria-pressed="false"
+                title="Trace practice: follow a guide circle of any size">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-dasharray="3.2 2.3"/><circle cx="10" cy="10" r="1.8" fill="currentColor"/></svg>
+          <span class="chip-text">Trace</span>
+        </button>
         <button type="button" class="chip chip-stats" id="statsBtn" aria-haspopup="dialog" aria-label="Your stats">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 16.5V10M10 16.5V4M16 16.5V8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
           <span id="bestLabel">Stats</span><strong id="bestValue"></strong>
@@ -48,8 +53,20 @@
     </header>
 
     <div class="hint" id="hint" aria-hidden="true">
-      <p class="hint-title">Draw a circle</p>
-      <p class="hint-sub">One stroke, any size, anywhere. Lift to be judged.</p>
+      <p class="hint-title" id="hintTitle">Draw a circle</p>
+      <p class="hint-sub" id="hintSub">One stroke, any size, anywhere. Lift to be judged.</p>
+    </div>
+
+    <div class="tracebar" id="traceBar" role="group" aria-label="Trace practice settings" hidden>
+      <div class="trace-row">
+        <label class="trace-label" for="traceSize">Radius</label>
+        <input type="range" id="traceSize" min="40" max="300" step="1" value="150">
+        <output class="trace-value" id="traceSizeValue" for="traceSize">150 px</output>
+      </div>
+      <div class="trace-row">
+        <button type="button" class="secondary compact" id="traceRandom">Random size</button>
+        <label class="trace-check"><input type="checkbox" id="traceHide"> Hide guide while drawing</label>
+      </div>
     </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -62,38 +79,13 @@
         <div class="verdict">
           <span class="new-best" id="newBest" hidden>New best</span>
           <span class="grade" id="grade">&nbsp;</span>
-          <span class="method">Center found after drawing</span>
+          <span class="method" id="method">Center found after drawing</span>
         </div>
       </div>
 
       <p class="tip" id="tip" hidden></p>
 
-      <dl class="stats">
-        <div class="stat">
-          <dt>Average radius</dt>
-          <dd id="statRadius">&mdash;</dd>
-        </div>
-        <div class="stat">
-          <dt>Wobble <abbr title="Root-mean-square deviation from the average radius">(RMS)</abbr></dt>
-          <dd id="statRms">&mdash;</dd>
-        </div>
-        <div class="stat">
-          <dt><span class="miss-dot" aria-hidden="true"></span>Biggest miss</dt>
-          <dd id="statMax">&mdash;</dd>
-        </div>
-        <div class="stat">
-          <dt>Widest &minus; narrowest</dt>
-          <dd id="statPtv">&mdash;</dd>
-        </div>
-        <div class="stat">
-          <dt>Loop</dt>
-          <dd id="statLoop">&mdash;</dd>
-        </div>
-        <div class="stat">
-          <dt>Time</dt>
-          <dd id="statTime">&mdash;</dd>
-        </div>
-      </dl>
+      <dl class="stats" id="stats"></dl>
 
       <div class="legend" aria-hidden="true">
         <span>On the circle</span>
@@ -122,6 +114,8 @@
         <p class="help-note"><strong>% (classic):</strong> 100 minus 5 points per 1% of wobble, minus the gap penalty. Easy to read, but the 5 and the penalty are hand-picked.</p>
         <p class="help-note"><strong>bits (precision):</strong> <span class="formula">p = &frac12;&middot;log<sub>2</sub>(1 + r&#772;&sup2;&thinsp;/&thinsp;&sigma;&sup2;) &asymp; log<sub>2</sub>(r&#772;&thinsp;/&thinsp;&sigma;)</span>. Here r&#772; is the average radius and &sigma; is the root-mean-square distance between your stroke and that circle, measured both ways (stroke to circle and circle to stroke), so a gap counts as error by itself. There are no tuning constants. Each extra bit means your wobble halved, and &ldquo;1 part in N&rdquo; means &sigma; is 1/N of the radius. The score has no ceiling: it climbs faster and faster, with infinite slope, as the circle approaches perfect. It is what an extreme exponent like 1&nbsp;&minus;&nbsp;(&sigma;/r&#772;)<sup>1/1000</sup> becomes once it is rescaled by 1000.</p>
         <p class="help-note">Your stroke is colored by how far each part is from the average radius. The ring marks the biggest miss. The stroke is resampled evenly along its length, so drawing faster or slower in places doesn&rsquo;t skew the result.</p>
+        <h3 class="help-sub">Trace practice</h3>
+        <p class="help-note">Tap <em>Trace</em> to practise on a guide circle. Set its radius with the slider, or tap <em>Random size</em>, then trace over it in one stroke. Tick <em>Hide guide while drawing</em> to draw it from memory. A trace is judged against the guide itself: the same % and bits formulas, with the guide&rsquo;s center and radius as the reference, so being too big, too small or off-center all count. The card also shows how round your shape was on its own (<em>Shape alone</em>) and how far its located center landed from the guide&rsquo;s. Traces are practice only and aren&rsquo;t saved to your stats; the card keeps a tally for the session.</p>
         <p class="help-note"><strong>Stats:</strong> every closed circle, where the end of your stroke meets or crosses the start, is saved on this device. Open <em>Stats</em> to see your averages, trends and history, or to export them. Circles with a gap are still scored, but not saved.</p>
         <p class="help-note"><strong>iPad:</strong> once you draw with Apple Pencil, touches from your hand are ignored. Tap the <em>Pencil only</em> chip to draw with a finger again. <strong>Laptop:</strong> click and drag with a mouse or trackpad. Press <kbd>Esc</kbd> to clear.</p>
         <button class="primary" value="close">Got it</button>

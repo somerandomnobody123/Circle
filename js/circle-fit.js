@@ -464,6 +464,121 @@
     };
   }
 
+  /**
+   * Judge a stroke traced over a given guide circle `target` = {x, y, r}.
+   *
+   * Here the reference is known in advance, so everything is measured against
+   * the guide: the same classic % and precision-bits formulas, with the guide's
+   * center and radius in place of the located ones. The free-hand analysis of
+   * the same stroke (center located after drawing) is returned as `fit`, so
+   * the shape can be judged on its own too.
+   *
+   * The result's `center` and `radius` are the guide's, so relativeDeviation()
+   * colors the stroke by distance from the guide.
+   */
+  function analyzeTrace(rawPoints, target, options) {
+    var opts = {};
+    var key;
+    for (key in DEFAULTS) opts[key] = DEFAULTS[key];
+    if (options) for (key in options) opts[key] = options[key];
+
+    var points = (rawPoints || []).filter(function (p) {
+      return p && isFinite(p.x) && isFinite(p.y);
+    });
+    if (!target || !(target.r > 0)) return failure('nofit', 'There is no guide circle to trace.');
+    if (points.length < opts.minPoints) {
+      return failure('short', 'Trace the whole guide in one stroke.');
+    }
+    var cx = target.x, cy = target.y, R = target.r;
+    var length = pathLength(points);
+    var n = clamp(Math.round(length / opts.sampleSpacing), 64, 1024);
+    var samples = resample(points, n);
+
+    // How far around the guide's center the stroke travels.
+    var swept = 0, i;
+    var prevAngle = Math.atan2(samples[0].y - cy, samples[0].x - cx);
+    for (i = 1; i < samples.length; i++) {
+      var ang = Math.atan2(samples[i].y - cy, samples[i].x - cx);
+      swept += wrapAngle(ang - prevAngle);
+      prevAngle = ang;
+    }
+    var turns = Math.abs(swept) / TAU;
+    if (turns < opts.minSweepTurns) {
+      return failure('open',
+        'Keep going \u2014 follow the guide all the way around (that was ' + Math.round(turns * 360) + '\u00b0).',
+        { sweptDegrees: turns * 360 });
+    }
+    if (turns > opts.maxSweepTurns) {
+      return failure('loops', 'One lap only \u2014 that went around ' + turns.toFixed(1) + ' times.',
+        { sweptDegrees: turns * 360 });
+    }
+
+    // Deviation of every sample from the guide.
+    var sq = 0, abs = 0, sum = 0, minR = Infinity, maxR = -Infinity, maxDev = 0, maxIdx = 0;
+    for (i = 0; i < samples.length; i++) {
+      var d = Math.hypot(samples[i].x - cx, samples[i].y - cy);
+      var dev = d - R;
+      sum += d;
+      sq += dev * dev;
+      abs += Math.abs(dev);
+      if (d < minR) minR = d;
+      if (d > maxR) maxR = d;
+      if (Math.abs(dev) > Math.abs(maxDev)) { maxDev = dev; maxIdx = i; }
+    }
+    var rms = Math.sqrt(sq / samples.length);
+    var gapTurns = Math.max(0, 1 - turns);
+    if (gapTurns * 360 < 0.5) gapTurns = 0;
+    var score = clamp(100 * (1 - opts.wobblePenalty * rms / R) - opts.gapPenalty * gapTurns, 0, 100);
+
+    var circleRms = circleToStrokeRms(samples, cx, cy, R, CIRCLE_PROBES);
+    var sigma = Math.sqrt((rms * rms + circleRms * circleRms) / 2);
+
+    var gapPx = endGap(samples);
+    var first = points[0], last = points[points.length - 1];
+
+    // The same stroke judged free-hand, around its own located center.
+    var fit = analyze(points, options);
+    var centerOffset = fit.ok ? { x: fit.center.x - cx, y: fit.center.y - cy } : null;
+
+    return {
+      ok: true,
+      trace: true,
+      score: score,
+      target: { x: cx, y: cy, r: R },
+      center: { x: cx, y: cy },          // the reference circle is the guide
+      radius: R,
+      rms: rms,                          // px, RMS distance from the guide (radially)
+      relativeRms: rms / R,
+      meanAbsDeviation: abs / samples.length,
+      bias: sum / samples.length - R,    // px, + = drawn bigger than the guide on average
+      maxDeviation: maxDev,
+      maxDeviationPoint: { x: samples[maxIdx].x, y: samples[maxIdx].y },
+      minRadius: minR,
+      maxRadius: maxR,
+      peakToValley: maxR - minR,
+      precision: {
+        bits: precisionBits(R, sigma),
+        sigma: sigma,
+        strokeRms: rms,
+        circleRms: circleRms,
+        ratio: sigma > 0 ? R / sigma : Infinity
+      },
+      fit: fit,                          // free-hand analysis (may be { ok: false })
+      centerOffset: centerOffset,        // px, located center minus guide center
+      oval: fit.ok ? fit.oval : null,
+      sweptDegrees: turns * 360,
+      direction: swept >= 0 ? 1 : -1,
+      startAngle: Math.atan2(first.y - cy, first.x - cx),
+      closed: gapTurns === 0,
+      gapDegrees: gapTurns * 360,
+      endGap: gapPx,
+      connected: gapPx <= Math.max(opts.joinMinPx, opts.joinTolerance * R),
+      length: length,
+      sampleCount: samples.length,
+      duration: (isFinite(first.t) && isFinite(last.t)) ? Math.max(0, last.t - first.t) : null
+    };
+  }
+
   /** Signed deviation of an arbitrary point, as a fraction of the radius. */
   function relativeDeviation(result, x, y) {
     return (Math.hypot(x - result.center.x, y - result.center.y) - result.radius) / result.radius;
@@ -471,6 +586,7 @@
 
   return {
     analyze: analyze,
+    analyzeTrace: analyzeTrace,
     relativeDeviation: relativeDeviation,
     precisionBits: precisionBits,
     MAX_BITS: MAX_BITS,
