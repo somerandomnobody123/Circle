@@ -1,0 +1,11 @@
+{
+  "name": "circle-judge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Draw a circle and get it judged for roundness, around a center located after you draw.",
+  "scripts": {
+    "start": "python3 -m http.server 8000",
+    "test": "node --test"
+  },
+  "license": "MIT"
+}
