@@ -44,8 +44,13 @@ Tap **Trace** in the top bar to practise on a guide circle:
   - **bits mode:** `½·log₂(1 + R² / σ²)`, with σ measured both ways against the guide.
 
   Drawing too big, too small or off-center all count as error.
-- **The card** shows how far off the guide you were, the biggest miss, your size error, and how far your circle's located center landed from the guide's. **Shape alone** scores the same stroke free-hand, around its own center, so you can tell a round but misplaced circle from a lumpy one. The tips name the main problem, e.g. "You ran 12 px outside the guide on average" or "Your circle sat 17 px above and to the right of the guide".
-- **Practice only:** traces aren't saved to your stats. The card keeps a running count, average and best for the session.
+- **Two grades for every trace,** side by side and in the current % or bits mode:
+  - **Against the guide:** how closely you followed the guide, as above.
+  - **As a circle:** the same stroke graded normally, exactly like free drawing, around the center located after you draw.
+
+  A round circle in the wrong place scores high as a circle and low against the guide. A lumpy circle on the line scores low on both.
+- **The card** also shows how far off the guide you were, the biggest miss, your size error, how far your circle's located center landed from the guide's, and your circle's own wobble. The tips name the main problem, e.g. "You ran 12 px outside the guide on average" or "Your circle sat 17 px above and to the right of the guide".
+- **Practice only:** traces aren't saved to your stats. The card keeps a running count and session averages for both grades.
 
 The trace settings (on/off, radius, hide guide) are remembered on each device.
 

@@ -74,12 +74,28 @@
     <p class="sr-only" id="announce" aria-live="polite"></p>
 
     <section class="card" id="card" aria-label="Result" hidden>
-      <div class="card-head">
+      <div class="card-head" id="singleHead">
         <div class="score" id="score"><span id="scoreValue">0.0</span><span class="score-unit" id="scoreUnit">%</span></div>
         <div class="verdict">
           <span class="new-best" id="newBest" hidden>New best</span>
           <span class="grade" id="grade">&nbsp;</span>
           <span class="method" id="method">Center found after drawing</span>
+        </div>
+      </div>
+
+      <!-- Trace results get two grades: against the guide, and as a circle on its own. -->
+      <div class="dual" id="dualHead" hidden>
+        <div class="dual-col">
+          <span class="dual-label">Against the guide <span class="new-best" id="traceBest" hidden>Session best</span></span>
+          <div class="score score-dual" id="guideScore"><span id="guideValue">0.0</span><span class="score-unit" id="guideUnit">%</span></div>
+          <span class="dual-grade" id="guideGrade">&nbsp;</span>
+          <span class="method">Guide&rsquo;s center and radius</span>
+        </div>
+        <div class="dual-col">
+          <span class="dual-label">As a circle</span>
+          <div class="score score-dual" id="fitScore"><span id="fitValue">0.0</span><span class="score-unit" id="fitUnit">%</span></div>
+          <span class="dual-grade" id="fitGrade">&nbsp;</span>
+          <span class="method">Center found after drawing</span>
         </div>
       </div>
 
@@ -115,7 +131,7 @@
         <p class="help-note"><strong>bits (precision):</strong> <span class="formula">p = &frac12;&middot;log<sub>2</sub>(1 + r&#772;&sup2;&thinsp;/&thinsp;&sigma;&sup2;) &asymp; log<sub>2</sub>(r&#772;&thinsp;/&thinsp;&sigma;)</span>. Here r&#772; is the average radius and &sigma; is the root-mean-square distance between your stroke and that circle, measured both ways (stroke to circle and circle to stroke), so a gap counts as error by itself. There are no tuning constants. Each extra bit means your wobble halved, and &ldquo;1 part in N&rdquo; means &sigma; is 1/N of the radius. The score has no ceiling: it climbs faster and faster, with infinite slope, as the circle approaches perfect. It is what an extreme exponent like 1&nbsp;&minus;&nbsp;(&sigma;/r&#772;)<sup>1/1000</sup> becomes once it is rescaled by 1000.</p>
         <p class="help-note">Your stroke is colored by how far each part is from the average radius. The ring marks the biggest miss. The stroke is resampled evenly along its length, so drawing faster or slower in places doesn&rsquo;t skew the result.</p>
         <h3 class="help-sub">Trace practice</h3>
-        <p class="help-note">Tap <em>Trace</em> to practise on a guide circle. Set its radius with the slider, or tap <em>Random size</em>, then trace over it in one stroke. Tick <em>Hide guide while drawing</em> to draw it from memory. A trace is judged against the guide itself: the same % and bits formulas, with the guide&rsquo;s center and radius as the reference, so being too big, too small or off-center all count. The card also shows how round your shape was on its own (<em>Shape alone</em>) and how far its located center landed from the guide&rsquo;s. Traces are practice only and aren&rsquo;t saved to your stats; the card keeps a tally for the session.</p>
+        <p class="help-note">Tap <em>Trace</em> to practise on a guide circle. Set its radius with the slider, or tap <em>Random size</em>, then trace over it in one stroke. Tick <em>Hide guide while drawing</em> to draw it from memory. A trace is judged against the guide itself: the same % and bits formulas, with the guide&rsquo;s center and radius as the reference, so being too big, too small or off-center all count. Each trace gets two grades: <em>Against the guide</em>, and <em>As a circle</em>, which is judged exactly like free drawing, around the center located after you draw. So you can tell a round circle in the wrong place from a lumpy one on the line. The card also shows how far your circle&rsquo;s center landed from the guide&rsquo;s. Traces are practice only and aren&rsquo;t saved to your stats; the card keeps a tally for the session.</p>
         <p class="help-note"><strong>Stats:</strong> every closed circle, where the end of your stroke meets or crosses the start, is saved on this device. Open <em>Stats</em> to see your averages, trends and history, or to export them. Circles with a gap are still scored, but not saved.</p>
         <p class="help-note"><strong>iPad:</strong> once you draw with Apple Pencil, touches from your hand are ignored. Tap the <em>Pencil only</em> chip to draw with a finger again. <strong>Laptop:</strong> click and drag with a mouse or trackpad. Press <kbd>Esc</kbd> to clear.</p>
         <button class="primary" value="close">Got it</button>

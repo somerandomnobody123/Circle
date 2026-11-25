@@ -160,12 +160,19 @@
     try { window.localStorage.setItem(TRACE_KEY, JSON.stringify(state.trace)); } catch (e) { /* per-device nicety only */ }
   }
 
-  /** Where the guide sits: centered in the space between the top bar and the trace bar. */
+  /**
+   * Where the guide sits, in the space between the top bar and the trace bar:
+   * centered, except on tall portrait screens, where the result card goes
+   * above or below the drawing; there it sits a little high, leaving room for
+   * the card underneath.
+   */
   function traceGeometry() {
     var top = topbar.getBoundingClientRect().bottom;
     var bottom = traceBar.hidden ? state.height : traceBar.getBoundingClientRect().top;
-    var maxR = Math.floor(Math.min(state.width / 2, (bottom - top) / 2) - 16);
-    return { x: state.width / 2, y: (top + bottom) / 2, maxR: Math.max(TRACE_MIN, maxR) };
+    var portrait = state.width < 900 && state.height > state.width;
+    var y = top + (bottom - top) * (portrait ? 0.4 : 0.5);
+    var maxR = Math.floor(Math.min(state.width / 2, y - top, bottom - y) - 16);
+    return { x: state.width / 2, y: y, maxR: Math.max(TRACE_MIN, maxR) };
   }
 
   function currentTarget() {
@@ -507,9 +514,8 @@
     }
     updateBestChip();
     if (state.mode === 'result' && state.result) {
-      var S = SCORING[state.scoring];
       fillCard(state.result);
-      $('scoreValue').textContent = S.text(S.value(state.result) * state.anim);
+      renderScoreText(state.result, state.anim);
       placeCard();
     }
     if (statsView.isOpen()) statsView.refresh();
@@ -631,7 +637,6 @@
   }
 
   function traceTiles(res) {
-    var S = SCORING[state.scoring];
     var R = res.radius, fit = res.fit;
     var size = Math.abs(res.bias) < 0.05
       ? ['Size vs guide', 'Spot on']
@@ -642,7 +647,7 @@
       missTile(res),
       size,
       ['Center offset', off == null ? '\u2014' : fmt(off) + ' px', off == null ? null : pct(off / R)],
-      ['Shape alone', fit.ok ? S.full(S.value(fit)) : '\u2014'],
+      ['Own wobble (RMS)', fit.ok ? '\u00b1' + fmt(fit.rms) + ' px' : '\u2014', fit.ok ? pct(fit.relativeRms) : null],
       loopTile(res)
     ];
   }
@@ -650,16 +655,44 @@
   function fmt(v) { return v >= 100 ? v.toFixed(0) : v.toFixed(1); }
   function pct(v) { return (v * 100).toFixed(1) + '%'; }
 
+  function setUnit(id, S) {
+    $(id).textContent = S.unit;
+    $(id).classList.toggle('is-word', S.unit.length > 1);
+  }
+
+  /** The headline number(s), scaled by k for the count-up animation. */
+  function renderScoreText(res, k) {
+    var S = SCORING[state.scoring];
+    if (res.trace) {
+      $('guideValue').textContent = S.text(S.value(res) * k);
+      $('fitValue').textContent = res.fit.ok ? S.text(S.value(res.fit) * k) : '\u2014';
+    } else {
+      $('scoreValue').textContent = S.text(S.value(res) * k);
+    }
+  }
+
   function fillCard(res) {
     var S = SCORING[state.scoring];
-    var outcome = res.trace ? practiceOutcome(res, state.scoring) : saveOutcome(res, state.saved, state.scoring);
-    $('grade').textContent = S.grade(res);
-    $('method').textContent = res.trace ? 'Measured against the guide' : 'Center found after drawing';
-    $('score').style.setProperty('--score-color', S.color(res));
-    $('scoreUnit').textContent = S.unit;
-    $('scoreUnit').classList.toggle('is-word', S.unit.length > 1);
-    $('newBest').hidden = !outcome.isBest;
-    $('newBest').textContent = res.trace ? 'Session best' : 'New best';
+    var outcome = res.trace ? practiceOutcome(state.scoring) : saveOutcome(res, state.saved, state.scoring);
+    $('singleHead').hidden = !!res.trace;
+    $('dualHead').hidden = !res.trace;
+    if (res.trace) {
+      // Two grades: against the guide, and as a circle judged like free drawing.
+      $('guideGrade').textContent = S.grade(res);
+      $('guideScore').style.setProperty('--score-color', S.color(res));
+      setUnit('guideUnit', S);
+      $('traceBest').hidden = !outcome.isBest;
+      var fit = res.fit;
+      $('fitGrade').textContent = fit.ok ? S.grade(fit) : 'Not judged';
+      $('fitScore').style.setProperty('--score-color', fit.ok ? S.color(fit) : 'var(--muted)');
+      $('fitUnit').hidden = !fit.ok;
+      setUnit('fitUnit', S);
+    } else {
+      $('grade').textContent = S.grade(res);
+      $('score').style.setProperty('--score-color', S.color(res));
+      setUnit('scoreUnit', S);
+      $('newBest').hidden = !outcome.isBest;
+    }
     $('savedNote').textContent = outcome.note;
     $('savedNote').classList.toggle('is-unsaved', !res.trace && !state.saved.saved);
     $('savedNote').classList.toggle('is-practice', !!res.trace);
@@ -725,17 +758,25 @@
     };
   }
 
+  function average(list) {
+    return list.length ? list.reduce(function (a, b) { return a + b; }, 0) / list.length : null;
+  }
+
   /** Session tally for trace practice (traces are not saved to the stats). */
-  function practiceOutcome(res, mode) {
+  function practiceOutcome(mode) {
     var S = SCORING[mode];
-    var values = state.practice.map(function (p) { return S.metric === 'bits' ? p.bits : p.score; });
-    var n = values.length;
-    var current = values[n - 1];
-    var previousBest = n > 1 ? Math.max.apply(null, values.slice(0, -1)) : null;
-    var avg = values.reduce(function (a, b) { return a + b; }, 0) / n;
-    var note = 'Practice, not saved to your stats. ' +
-      (n === 1 ? 'First trace this session.'
-        : n + ' traces this session: average ' + S.full(avg) + ', best ' + S.full(Math.max(previousBest, current)) + '.');
+    var guide = state.practice.map(function (p) { return p.guide[S.metric]; });
+    var circle = state.practice.filter(function (p) { return p.circle; }).map(function (p) { return p.circle[S.metric]; });
+    var n = guide.length;
+    var current = guide[n - 1];
+    var previousBest = n > 1 ? Math.max.apply(null, guide.slice(0, -1)) : null;
+    var note = 'Practice, not saved to your stats. ';
+    if (n === 1) {
+      note += 'First trace this session.';
+    } else {
+      note += n + ' traces this session, averaging ' + S.full(average(guide)) + ' against the guide' +
+        (circle.length ? ' and ' + S.full(average(circle)) + ' as a circle.' : '.');
+    }
     return { isBest: n > 1 && current > previousBest, note: note };
   }
 
@@ -748,7 +789,10 @@
 
     if (res.trace) {
       state.saved = null;
-      state.practice.push({ score: res.score, bits: res.precision.bits });
+      state.practice.push({
+        guide: { score: res.score, bits: res.precision.bits },
+        circle: res.fit.ok ? { score: res.fit.score, bits: res.fit.precision.bits } : null
+      });
     } else {
       state.saved = recordCircle(res, input);
     }
@@ -757,19 +801,20 @@
     placeCard();
     void card.offsetWidth; // let the entrance transition run
     card.classList.add('is-visible');
-    announce.textContent = (res.trace ? 'Trace. ' : '') + SCORING[state.scoring].speak(res);
+    announce.textContent = res.trace
+      ? 'Against the guide: ' + SCORING[state.scoring].speak(res) +
+        (res.fit.ok ? ' As a circle: ' + SCORING[state.scoring].speak(res.fit) : '')
+      : SCORING[state.scoring].speak(res);
 
     var token = ++state.animToken;
     var duration = reduceMotion.matches ? 0 : 800;
-    var scoreEl = $('scoreValue');
     var startTime = null;
     function frame(now) {
       if (token !== state.animToken) return;
       if (startTime == null) startTime = now;
       var t = duration ? clamp((now - startTime) / duration, 0, 1) : 1;
       state.anim = easeOutCubic(t);
-      var S = SCORING[state.scoring];
-      scoreEl.textContent = S.text(S.value(res) * state.anim);
+      renderScoreText(res, state.anim);
       render();
       if (t < 1) window.requestAnimationFrame(frame);
     }

@@ -557,6 +557,48 @@ button {
   text-transform: uppercase;
 }
 
+.dual {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.dual-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.dual-col + .dual-col {
+  margin-left: 16px;
+  padding-left: 16px;
+  border-left: 1px solid var(--border);
+}
+
+.dual-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-height: 20px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.score-dual {
+  font-size: 40px;
+  margin-top: 2px;
+}
+
+.dual-grade {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
 .tip {
   margin: 14px 0 0;
   padding: 9px 12px;
@@ -1448,6 +1490,10 @@ kbd {
 
   .score {
     font-size: 46px;
+  }
+
+  .score-dual {
+    font-size: 34px;
   }
 
   .stats {
